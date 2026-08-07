@@ -12,6 +12,12 @@ packaging==26.3
 pillow==12.3.0
 pyNastran==1.4.1
 pyparsing==3.3.2
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.2
+PyQt5_sip==12.19.0
 python-dateutil==2.9.0.post0
+QtPy==2.4.3
 scipy==1.17.1
+setuptools==83.0.0
 six==1.17.0
+vtk==9.3.1
