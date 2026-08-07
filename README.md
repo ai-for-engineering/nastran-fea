@@ -26,6 +26,10 @@ and place it in `solver/`.
 
 Run the MYSTRAN solver between steps 2 and 3:
 ```bash
-cp models/lug_model.bdf models/lug_model.dat
-./solver/mystran-19.0.0-windows-x86_64.exe models/lug_model.dat
+./venv/Scripts/python scripts/run_solver.py models/lug_model.bdf
 ```
+This stages the `.dat` copy MYSTRAN expects, invokes the solver, and parses
+the `.F06` output for fatal errors -- MYSTRAN's process exit code and its
+"terminated normally" message are not reliable success signals on their own
+(see `scripts/run_solver.py` docstring). It's also importable as
+`run_solver(bdf_path, solver_exe_path) -> SolverResult` for programmatic use.
