@@ -66,10 +66,9 @@ Things with no README equivalent (code-level, not usage-level):
 
 ## Repo layout
 
-- `scripts/` -- the actual pipeline (mesh → BDF → solve → postprocess)
-- `test_fixtures/` -- synthetic CAD/data generated only to develop against
-  when we lack a real example; not the deliverable itself
-- `case_studies/` -- real, publicly-licensed reference models (gitignored,
-  see README for sources/licenses)
-- `models/`, `results/` -- generated outputs, gitignored except source PNGs
-  explicitly excluded too (regenerate via scripts)
+- `scripts/run_solver.py` -- generic MYSTRAN invocation wrapper (see
+  Gotchas); not tied to any specific model
+- `case_studies/nasa_crm_wingbox/` -- the current (only) case study, a real
+  publicly-licensed NASA structural assembly (gitignored, see README for
+  source/license and the OptiStruct→MYSTRAN case-control patch)
+- `solver/` -- the MYSTRAN binary, gitignored, download per README

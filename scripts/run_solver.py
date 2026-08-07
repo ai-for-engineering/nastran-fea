@@ -4,8 +4,8 @@ succeeded, instead of trusting the process exit code.
 
 This wraps the manual workflow described in the README:
 
-    cp models/lug_model.bdf models/lug_model.dat
-    ./solver/mystran-19.0.0-windows-x86_64.exe models/lug_model.dat
+    cp <model>.bdf <model>.dat
+    ./solver/mystran-19.0.0-windows-x86_64.exe <model>.dat
 
 Two things learned by testing MYSTRAN 19.0.0 directly (see PR description /
 commit message for the exact commands) drive the design here:
@@ -39,7 +39,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BDF_PATH = REPO_ROOT / "models" / "lug_model.bdf"
 DEFAULT_SOLVER_PATH = REPO_ROOT / "solver" / "mystran-19.0.0-windows-x86_64.exe"
 DEFAULT_TIMEOUT_S = 600
 
@@ -96,7 +95,7 @@ def _scan_f06_for_errors(f06_path: Path) -> list[str]:
 
 
 def run_solver(
-    bdf_path: str | Path = DEFAULT_BDF_PATH,
+    bdf_path: str | Path,
     solver_exe_path: str | Path = DEFAULT_SOLVER_PATH,
     timeout: float = DEFAULT_TIMEOUT_S,
 ) -> SolverResult:
@@ -193,9 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "bdf_path",
-        nargs="?",
-        default=str(DEFAULT_BDF_PATH),
-        help=f"Path to the BDF file to solve (default: {DEFAULT_BDF_PATH})",
+        help="Path to the BDF file to solve",
     )
     parser.add_argument(
         "--solver",
