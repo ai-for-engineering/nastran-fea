@@ -1,0 +1,19 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Solver binary (24MB, download separately -- see README)
+solver/*.exe
+
+# Generated model files (regenerate via scripts/)
+models/*.msh
+models/*.npz
+models/*.bdf
+models/*.dat
+models/*.F06
+models/*.OP2
+models/*.ERR
+models/*.NEU
+models/lug_mesh_preview.png
+results/*.png
