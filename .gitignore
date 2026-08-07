@@ -17,3 +17,14 @@ models/*.ERR
 models/*.NEU
 models/lug_mesh_preview.png
 results/*.png
+
+# Case study reference data (downloaded from public sources -- see README
+# for URLs/licenses; too large to commit, ~320MB combined)
+case_studies/
+
+# Generated test fixtures (regenerate via test_fixtures/*.py)
+test_fixtures/*.step
+test_fixtures/*.stp
+
+# Debug/log output
+*.log
