@@ -23,32 +23,30 @@ deliverable must run on the free stack.
 - `gh` CLI is authenticated on this machine (account `mabvscode`). Repo:
   `github.com/mabvscode/ai4engineering` (private).
 
-## Real gotchas discovered so far (don't re-derive these)
+## Gotchas
 
-- **MYSTRAN's exit code is 0 even on fatal errors.** Never trust the return
-  code or "MYSTRAN terminated normally" alone -- always check the `.F06` for
-  `*ERROR`/`FATAL` markers. `scripts/run_solver.py` does this correctly;
-  use it rather than shelling out to the solver directly.
-- If MYSTRAN can't find its input file, it **blocks on stdin** waiting for a
-  filename instead of failing. Always redirect `stdin` from the null device
-  when invoking it programmatically.
-- BDF field-width bugs are easy to introduce with pyNastran's `write_bdf`:
-  use `size=8` (small-field) and `enddata=True` explicitly -- `size=16` has
-  produced overflowing/concatenated fields on high-precision floats before.
-- MYSTRAN's `PSHELL` does not support a nonzero `MID4` (membrane-bending
-  coupling via `MAT2`) -- real capability gap, not a bug. Real anisotropic
-  "smeared stiffened panel" models (e.g. the uCRM case study) will fail with
-  `*ERROR 1194` until that term is zeroed or the model is swapped for an
-  isotropic (`MAT1`) one.
+Full explanations for anything setup/usage-relevant live in `README.md`
+(case studies section, GUI section, solver section) -- don't duplicate the
+rationale here, just the reminder:
+
+- MYSTRAN's exit code / "terminated normally" message is not trustworthy on
+  its own -- always go through `scripts/run_solver.py`, never shell out to
+  the solver directly (full story: README + the script's own docstring).
+- MYSTRAN's `PSHELL` can't take a nonzero `MID4` -- see README's case-studies
+  section (uCRM vs NASA CRM) before assuming an anisotropic shell model will
+  just run.
+- OptiStruct-authored decks (no `SOL`/`CEND`, `ANALYSIS MODES/STATICS`
+  syntax) need their case control rebuilt -- exact patch recipe is in
+  README's NASA CRM case-study section.
+- pyNastranGUI's dependency versions (VTK pin, etc.) are documented in
+  README's GUI section -- check there before reinstalling anything.
+
+Things with no README equivalent (code-level, not usage-level):
+
+- pyNastran's `write_bdf`: use `size=8, enddata=True` explicitly --
+  `size=16` has produced field overflow on high-precision floats before.
 - MYSTRAN's real-number parser wants a decimal point (`1.0E5`, not `1E5`).
-- Decks authored for Altair OptiStruct (via HyperMesh) often have no
-  `SOL`/`CEND` at all and use OptiStruct-only case-control syntax
-  (`ANALYSIS MODES`/`ANALYSIS STATICS`). The bulk data is usually standard
-  Nastran; only the case-control header needs rebuilding.
-- pyNastranGUI needs `PyQt5` + `vtk` (pinned to **9.3.1** -- newer 9.6.x
-  removed an API pyNastran 1.4.1 uses) + `setuptools`, none of which are
-  pulled in by the base `pynastran` package.
-- pyNastran's OP2 stress arrays: use
+- pyNastran OP2 stress arrays: use
   `op2.op2_results.stress.cquad4_stress[subcase]` (not the deprecated
   `op2.cquad4_stress`). `von_mises` is column index 7; `element_node[:, 0]`
   gives element IDs (each element appears twice, once per shell fiber).
