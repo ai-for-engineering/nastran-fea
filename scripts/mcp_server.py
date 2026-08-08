@@ -520,6 +520,76 @@ def _write_filtered_bdf(bdf_path: Path, hidden_eids: set[int], output_path: Path
     model.write_bdf(str(output_path), size=8, enddata=True)
 
 
+def _write_filtered_op2(op2_path: Path, kept_eids: set[int], output_path: Path) -> None:
+    """Write a copy of op2_path with every stress result trimmed down to
+    kept_eids, and every other result table (displacements, spc_forces,
+    load_vectors, ...) dropped entirely, to output_path.
+
+    This is the fix for a real hang found in issue #9: pairing a BDF
+    filtered down to an isolated subset (a handful of elements) with the
+    ORIGINAL full-model OP2 (results for all ~35k elements/~14k nodes) sent
+    pyNastranGUI's result-loading code down a path that didn't complete
+    within 240s -- confirmed by timing it directly. Trimming the OP2 to
+    match the filtered BDF's element set exactly (and dropping every result
+    category we're not going to use for a stress fringe anyway, since THEIR
+    node/element counts would reintroduce the same mismatch) brought the
+    same load down to ~12s in testing.
+
+    Only stress results are kept since that's all render_stress_contour's
+    fringe needs. nelements is recomputed from the actual number of unique
+    element IDs kept rather than the trimmed row count, since plate types
+    store 2 fiber rows per element but bar types store 1.
+    """
+    import numpy as np
+    from pyNastran.op2.op2 import OP2
+
+    op2 = OP2(debug=False)
+    op2.read_op2(str(op2_path), build_dataframe=False)
+    kept_array = np.fromiter(kept_eids, dtype="int64")
+
+    stress = op2.op2_results.stress
+    for attr_name in dir(stress):
+        if not attr_name.endswith("_stress") or attr_name.startswith("_"):
+            continue
+        subcases = getattr(stress, attr_name)
+        if not subcases:
+            continue
+        for subcase, arr in list(subcases.items()):
+            has_element_node = hasattr(arr, "element_node")
+            id_col = arr.element_node[:, 0] if has_element_node else arr.element
+            mask = np.isin(id_col, kept_array)
+            if not mask.any():
+                del subcases[subcase]
+                continue
+            arr.data = arr.data[:, mask, :]
+            if has_element_node:
+                arr.element_node = arr.element_node[mask, :]
+                arr.nelements = len(np.unique(arr.element_node[:, 0]))
+            else:
+                arr.element = arr.element[mask]
+                arr.nelements = int(mask.sum())
+            arr.ntotal = int(mask.sum())
+
+    # Drop other populated result categories (direct OP2 attributes, not
+    # nested under op2_results like stress is) -- their node/element counts
+    # would reconcile against the isolated subset just as badly as the
+    # original full-model stress array did, and render_stress_contour never
+    # uses them anyway. get_table_types() also lists many attributes that
+    # don't exist as plain OP2 attributes (nested under op2_results in ways
+    # that vary by table), so this targets the handful of top-level result
+    # dicts that are actually ever populated by a real solve rather than
+    # trying to walk every path it returns.
+    for attr_name in (
+        "displacements", "velocities", "accelerations",
+        "spc_forces", "mpc_forces", "load_vectors", "applied_loads",
+        "grid_point_forces", "strain_energy", "temperatures",
+    ):
+        if getattr(op2, attr_name, None):
+            setattr(op2, attr_name, {})
+
+    op2.write_op2(str(output_path))
+
+
 def _up_vector_for_horizontal_long_axis(view_direction, points) -> "np.ndarray":
     """Given a view direction and a (n, 3) array of world-space points,
     return a view_up vector such that the points' long axis (found via PCA,
@@ -809,8 +879,14 @@ _sb.GetTitleTextProperty().SetFontSize(16)
 _sb.GetLabelTextProperty().SetFontSize(13)
 """
     else:
+        # No result to show a scale for -- hiding just the legend while
+        # leaving pyNastranGUI's default NodeID rainbow coloring on the mesh
+        # looks broken (color gradient with nothing to explain it), so
+        # switch the mapper to a solid neutral color instead.
         legend_block = """\
 self.scalar_bar.set_visibility(False)
+self.grid_mapper.ScalarVisibilityOff()
+self.geometry_actors['main'].GetProperty().SetColor(0.7, 0.7, 0.75)
 """
 
     fringe_block = ""
@@ -906,15 +982,26 @@ def _render(
 
     custom_camera = None
     if camera == "auto":
-        if resolved_op2_path is not None:
-            custom_camera = _camera_look_direction_for_governing_element(
-                in_path, resolved_op2_path
-            )
-        if custom_camera is None and is_isolating:
+        if is_isolating:
+            # Isolating removes everything else from the scene, so the
+            # occlusion concern the governing-element camera solves doesn't
+            # apply -- whatever's left is visible no matter which way it's
+            # viewed. What actually matters for a sub-component view (ribs,
+            # spars, skin panels, ...) is showing the isolated elements
+            # themselves well, e.g. fanning out parallel ribs instead of
+            # collapsing them edge-on -- so this takes priority over aiming
+            # at the model's single worst element, which might not even be
+            # part of the isolated group (isolating ribs while the worst
+            # element is on the skin would otherwise aim off of what's
+            # actually being shown).
             isolated_eids = _eids_for_isolate(
                 in_path, isolate_groups, isolate_property_ids, ses_path
             )
             custom_camera = _camera_look_direction_for_isolated_group(in_path, isolated_eids)
+        if custom_camera is None and resolved_op2_path is not None:
+            custom_camera = _camera_look_direction_for_governing_element(
+                in_path, resolved_op2_path
+            )
         if custom_camera is None:
             # Bar-only model/group (e.g. CBAR governs, or an isolated group
             # of only CBARs) -- no plate face normal to aim at, so fall back
@@ -928,12 +1015,17 @@ def _render(
     # custom_camera (fixed preset applied to a filtered-down scene) still
     # benefits from a tighter default than the un-zoomed 1.0 used for a
     # plain full-model preset view, just not as tight as the tuned "auto"
-    # views. All three values verified by eye during development against
-    # the real wingbox case study.
+    # views. An isolated stress contour is zoomed slightly less than an
+    # isolated plain geometry view (1.9 vs 2.2) purely to leave room for the
+    # legend, which the geometry-only view doesn't have. All values verified
+    # by eye during development against the real wingbox case study.
     if zoom is not None:
         resolved_zoom = zoom
     elif custom_camera is not None:
-        resolved_zoom = 2.1 if resolved_op2_path is not None else 2.2
+        if is_isolating:
+            resolved_zoom = 1.9 if resolved_op2_path is not None else 2.2
+        else:
+            resolved_zoom = 2.1
     elif is_isolating:
         resolved_zoom = 1.5
     else:
@@ -951,6 +1043,24 @@ def _render(
             render_bdf_path = tmpdir_path / "filtered.bdf"
             _write_filtered_bdf(in_path, hidden_eids, render_bdf_path)
 
+        render_op2_path = resolved_op2_path
+        if hidden_eids and resolved_op2_path is not None:
+            # Pairing a filtered-down BDF with the ORIGINAL full-model OP2
+            # is exactly the mismatch that hangs pyNastranGUI (see
+            # _write_filtered_op2's docstring / issue #9) -- trim the OP2 to
+            # the same kept element set so geometry and results match.
+            # render_bdf_path was just written with hidden_eids removed, so
+            # reading its own element IDs back is the simplest way to get
+            # exactly what's actually being rendered.
+            from pyNastran.bdf.bdf import BDF
+
+            kept_model = BDF()
+            kept_model.read_bdf(str(render_bdf_path), xref=False)
+            kept_eids = set(kept_model.elements.keys())
+
+            render_op2_path = tmpdir_path / "filtered.OP2"
+            _write_filtered_op2(resolved_op2_path, kept_eids, render_op2_path)
+
         postscript_path = tmpdir_path / "postscript.py"
         postscript_path.write_text(
             _build_postscript(
@@ -965,18 +1075,10 @@ def _render(
         fringe_flag_path.unlink(missing_ok=True)
 
         try:
-            proc = _run_pynastrangui(render_bdf_path, resolved_op2_path, postscript_path, render_timeout)
+            proc = _run_pynastrangui(render_bdf_path, render_op2_path, postscript_path, render_timeout)
         except subprocess.TimeoutExpired as exc:
-            hint = ""
-            if is_isolating and resolved_op2_path is not None:
-                hint = (
-                    " (known slow/hanging path -- see issue #9: loading full-"
-                    "model results against a heavily-isolated/reduced geometry "
-                    "subset can take excessively long; consider render_model_view "
-                    "without op2_path for isolate_* views instead)"
-                )
             raise RuntimeError(
-                f"pyNastranGUI did not finish within {render_timeout}s{hint}"
+                f"pyNastranGUI did not finish within {render_timeout}s"
             ) from exc
 
     fringe_set = None
@@ -1047,14 +1149,15 @@ def render_model_view(
     either op2_path (this tool doesn't take one -- see
     render_stress_contour, where "auto" *is* the default) or isolate_*; it
     raises in that case rather than guessing.
-    zoom: >1 zooms in after the camera preset is applied (plain camera
-    reset alone leaves significant empty margin around the model). Default
-    is 1.0 (no zoom) normally, but 1.5 automatically when isolate_* is used
-    -- an isolated subset is typically small relative to the original
-    scene, so the tighter default actually fills the frame instead of
-    leaving it mostly empty (verified by eye during development: 1.5 filled
-    the frame well for a ~6,200-of-35,489-element isolated group without
-    cropping it). Override explicitly if 1.5 crops or under-fills your case.
+    zoom: >1 zooms in after the camera is set (plain camera reset alone
+    leaves significant empty margin around the model). Default is 1.0 (no
+    zoom) normally; 1.5 with isolate_* and a fixed preset (an isolated
+    subset is typically small relative to the original scene, so the
+    tighter default actually fills the frame instead of leaving it mostly
+    empty); 2.2 with isolate_* and camera="auto" (its deliberate framing
+    fits tighter still). All verified by eye during development against the
+    real wingbox case study -- override explicitly if a default crops or
+    under-fills your case.
 
     The corner orientation-axes triad is always hidden, and since there's no
     result to show, the legend is hidden too (rather than left showing
@@ -1103,16 +1206,23 @@ def render_stress_contour(
     left in place instead.
 
     camera: "iso"/"top"/"side" (see _CAMERA_PRESETS), or the default,
-    "auto" -- which looks up the governing (highest von Mises) plate element
-    via get_max_stress, then points the camera straight down that element's
-    outward face normal before fitting the whole model to the frame. Because
-    it's an outer skin panel, nothing else in the model sits further outward
-    along that exact direction, so the governing element is guaranteed to be
-    visible and unobstructed rather than potentially hidden behind other
-    geometry or foreshortened edge-on the way a fixed preset can leave it.
-    Falls back to "iso" if there's no plate stress result to aim at (e.g. a
-    bar-only model where a CBAR governs). "auto" needs op2_path, so it's
-    only offered here, not on render_model_view.
+    "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
+    governing (highest von Mises) plate element via get_max_stress, then
+    points the camera straight down that element's outward face normal
+    before fitting the whole model to the frame -- because it's an outer
+    skin panel, nothing else in the model sits further outward along that
+    exact direction, so the governing element is guaranteed to be visible
+    and unobstructed rather than potentially hidden behind other geometry or
+    foreshortened edge-on the way a fixed preset can leave it. WITH
+    isolate_groups/isolate_property_ids, "auto" aims for the isolated
+    elements' shared face normal instead (see
+    _camera_look_direction_for_isolated_group) -- isolating already removes
+    any occlusion concern, so showing the isolated sub-component itself well
+    (e.g. fanning out parallel ribs instead of collapsing them edge-on)
+    takes priority over aiming at the model's single worst element, which
+    might not even be part of what's isolated. Falls back to "iso" if
+    there's no plate element to aim at either way (e.g. a bar-only model/
+    group where a CBAR governs).
 
     Caveat verified during development: pyNastranGUI's own "Stress vonMises"
     fringe/legend is a GUI-internal combined scalar across element types --
@@ -1131,14 +1241,17 @@ def render_stress_contour(
     11-label bar, 5-digit stress values came out enormous -- confirmed
     against the first published renders).
 
-    Known limitation: combining isolate_groups/isolate_property_ids with
-    op2_path can hang or take excessively long when the isolated subset is
-    a small fraction of a much larger model -- loading full-model results
-    against heavily-reduced geometry appears to hit a slow path in
-    pyNastran (observed: >180s / didn't complete for a ~6,200-of-35,489
-    isolated subset, vs. ~90s for the full model). If you hit this, use
-    render_model_view (no results) for isolated views instead until this is
-    resolved -- see issue #9.
+    isolate_groups/isolate_property_ids work here too, for a stress contour
+    on just one sub-component (ribs, spars, skin panels, ...) -- pairing a
+    filtered-down BDF with the full-model OP2 used to hang pyNastranGUI
+    (observed: >240s / didn't complete for a ~6,200-of-35,489 isolated
+    subset, vs. ~90s for the full model), so the OP2 is now trimmed to the
+    same kept element set first (see _write_filtered_op2), which brought
+    that same case down to ~12s. Only the stress results needed for the
+    fringe are kept in the trimmed OP2 -- other result categories
+    (displacements, spc_forces, ...) are dropped rather than reconciling
+    their own node/element counts against the isolated subset, since
+    render_stress_contour doesn't use them anyway.
     """
     return _render(
         bdf_path=bdf_path,

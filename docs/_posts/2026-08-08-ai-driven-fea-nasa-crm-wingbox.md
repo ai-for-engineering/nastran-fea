@@ -133,8 +133,8 @@ session looks like:
 >
 > **Me:** Show me a stress contour, and isolate just the ribs so I can see
 > how they're loaded.
-> **Claude:** *(calls `render_stress_contour`, then `render_model_view`
-> with `isolate_groups=["RIBS"]`)* — two renders follow.
+> **Claude:** *(calls `render_model_view` with `isolate_groups=["RIBS"]`,
+> then `render_stress_contour` the same way)* — two renders follow.
 
 That last step is the newest piece of the pipeline: named-group isolation.
 The NASA download ships a `.ses` file (a Patran/HyperMesh session file, not
@@ -148,14 +148,36 @@ camera on whatever's left:
 *All 6,220 rib elements, isolated from the other ~29,000 elements in the
 assembly. A straight-on view here would perfectly overlap every parallel
 rib into one; `camera="auto"` instead aims for their shared face normal,
-tilted enough to fan them out so each one is individually distinguishable.
-(Color here is by node ID — an artifact of the default view when there's no
-stress result loaded, not a result itself.)*
+tilted enough to fan them out so each one is individually distinguishable.*
+
+Isolating a sub-component is far more useful with its own stress contour on
+top, not just bare geometry:
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_ribs_stress.png" alt="Von Mises stress contour on just the isolated ribs" style="max-width:100%;">
+
+*The same isolated ribs, now colored by von Mises stress —
+`render_stress_contour(..., isolate_groups=["RIBS"])`. The governing
+element here (17,884 psi) is a genuinely different, rib-specific peak, not
+the model-wide one from the full view above. Getting this working reliably
+took a real fix, covered below.*
+
+## A real bug, and how it got fixed
+
+Isolating a small subset of a large model while also loading full-model
+stress results used to just hang — pairing a filtered-down geometry (a
+few thousand elements) with the ORIGINAL, untrimmed OP2 (results for all
+~35,000) sent pyNastranGUI down a path that didn't complete even after
+240 seconds. The fix wasn't to wait longer or hide more of the model in
+the GUI itself (also confirmed slow, separately) — it was to trim the OP2
+file itself, in Python, down to exactly the elements being isolated,
+before pyNastranGUI ever sees it. Geometry and results end up the same
+size, the mismatch that caused the slow path disappears, and the same
+case that wouldn't finish in 240 seconds now loads in about 12.
 
 ## Honest caveats
 
 In the spirit of not overselling this: a few things this pipeline
-explicitly does **not** do, and one thing it does slower than I'd like.
+explicitly does **not** do.
 
 - **This isn't a certified stress-substantiation process.** Real
   aerospace sign-off needs allowables, buckling and fatigue checks, hand-calc
@@ -167,11 +189,6 @@ explicitly does **not** do, and one thing it does slower than I'd like.
   VTK's OpenGL context on Windows, so this is non-interactive, not
   headless. Fine for a local workflow or a CI runner with a display; not
   something you'd run on a bare server today.
-- **Isolating a small subset of a large model while loading full-model
-  stress results is slow enough to be impractical right now** — it can
-  hang rather than complete in a reasonable time. The workaround is to
-  isolate geometry only (`render_model_view`, no results) when you need a
-  tight view on a small group, and use the full model for stress contours.
 - **MYSTRAN has real capability gaps** versus commercial Nastran, like the
   PSHELL/MID4 limitation above. Worth checking before assuming any given
   model will just run on the open-source stack.
