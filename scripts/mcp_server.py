@@ -491,7 +491,25 @@ def _resolve_hidden_eids(
 
         model = BDF()
         model.read_bdf(str(bdf_path), xref=False)
-        return set(model.elements.keys()) - keep
+        all_eids = set(model.elements.keys())
+        kept = all_eids & keep
+        if not kept:
+            # A .ses group can legitimately name IDs that aren't in
+            # model.elements at all -- e.g. LUMPED_MASS entries are mass
+            # points (CONM2, tracked separately in model.masses), not
+            # standard elements. Isolating one used to silently render a
+            # blank scene (everything hidden); worse, once render_stress_
+            # contour started trimming the OP2 to match, a genuinely empty
+            # kept set produced a degenerate OP2 with no tables at all,
+            # which pyNastran's own reader treats as a fatal error. Catching
+            # it here gives a clear reason instead of either outcome.
+            raise ValueError(
+                f"isolate_groups/isolate_property_ids matched 0 elements in "
+                f"{bdf_path} -- the requested IDs may not correspond to "
+                f"standard elements (e.g. mass points like CONM2 aren't in "
+                f"model.elements)"
+            )
+        return all_eids - kept
 
     hidden: set[int] = set()
     if hide_groups:
@@ -1061,13 +1079,35 @@ def _render(
             render_op2_path = tmpdir_path / "filtered.OP2"
             _write_filtered_op2(resolved_op2_path, kept_eids, render_op2_path)
 
+        # Only actually attempt the vonMises fringe if a plate stress result
+        # (the only type get_max_stress calls "von_mises") is genuinely
+        # present in what's about to be loaded. This matters beyond just
+        # "don't bother" for a bar-only selection: pyNastranGUI internally
+        # synthesizes a bar-stress-derived pseudo-vonMises case even when
+        # there's no plate data at all (see render_stress_contour's "GUI-
+        # internal combined scalar" caveat), and _build_postscript's search
+        # would happily find and apply THAT instead -- confirmed to be
+        # dramatically slow for a large all-CBAR selection (a Stiffeners-
+        # only isolate, 14,134 elements, hung past 180s with it, vs. ~15s
+        # once skipped entirely). CBARs were never going to get a
+        # meaningful von Mises fringe anyway (see get_max_stress's
+        # "max_stress" vs "von_mises" distinction), so there's nothing lost
+        # by not trying.
+        want_stress_fringe = False
+        if render_op2_path is not None:
+            try:
+                peaks = get_max_stress(str(render_op2_path))
+            except ValueError:
+                peaks = {}
+            want_stress_fringe = any("von_mises" in peak for peak in peaks.values())
+
         postscript_path = tmpdir_path / "postscript.py"
         postscript_path.write_text(
             _build_postscript(
                 out_png,
                 camera,
                 resolved_zoom,
-                want_stress_fringe=resolved_op2_path is not None,
+                want_stress_fringe=want_stress_fringe,
                 custom_camera=custom_camera,
             )
         )
@@ -1082,6 +1122,11 @@ def _render(
             ) from exc
 
     fringe_set = None
+    if resolved_op2_path is not None:
+        # Known False without needing the subprocess's sidecar file when we
+        # never asked it to look (see want_stress_fringe above) -- only an
+        # attempted-but-not-found search actually depends on that.
+        fringe_set = False
     if fringe_flag_path.is_file():
         fringe_set = fringe_flag_path.read_text().strip() == "1"
         fringe_flag_path.unlink()
@@ -1234,6 +1279,15 @@ def render_stress_contour(
     "von_mises" (plates only) or "max_stress" (bars, raw direct stress) --
     don't assume the on-screen legend matches get_max_stress's output when
     bar elements share the frame with plates.
+
+    That GUI-synthesized bar-stress-derived pseudo-vonMises case is also why
+    the fringe is only attempted at all when get_max_stress reports a real
+    plate von_mises result -- for an all-CBAR selection (e.g. isolating a
+    "Stiffeners" group that's 100% CBAR), applying that synthesized case
+    turned out to be dramatically slow (a 14,134-element all-CBAR isolate
+    hung past 180s with it, vs. ~15s once skipped). CBARs never had a
+    meaningful von Mises value anyway, so skipping it costs nothing;
+    fringe_set comes back False in that case rather than trying and hanging.
 
     The corner orientation-axes triad is always hidden, and the legend is
     shrunk to a small fixed font size rather than left at pyNastranGUI's

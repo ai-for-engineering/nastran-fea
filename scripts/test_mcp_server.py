@@ -336,6 +336,21 @@ def test_render_model_view_auto_camera_requires_op2(proper_bdf: Path, tmp_path: 
         ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), camera="auto")
 
 
+def test_render_model_view_isolate_matching_zero_elements(
+    two_property_bdf: Path, tmp_path: Path
+):
+    """Regression test: a .ses group (or property ID) can legitimately name
+    IDs that aren't in model.elements at all -- e.g. mass points. This used
+    to either silently render a blank scene, or (once render_stress_contour
+    started trimming the OP2 to match the isolated set) crash with an
+    opaque pyNastran-internal FatalError reading a degenerate, empty-tables
+    OP2. Should raise a clear reason instead."""
+    with pytest.raises(ValueError, match="matched 0 elements"):
+        ms.render_model_view(
+            str(two_property_bdf), str(tmp_path / "out.png"), isolate_property_ids=[999],
+        )
+
+
 @pytest.mark.skipif(
     not Path(DEFAULT_SOLVER_PATH).is_file(),
     reason="MYSTRAN solver not available in this environment.",
