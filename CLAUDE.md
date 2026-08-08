@@ -11,6 +11,11 @@ scope is narrower: AI-driven FEA in native Nastran bulk-data format only.
 Don't conflate the two in docs/naming -- "AI4Engineering" is the umbrella,
 not this project's name.
 
+Note: the GitHub organization is `ai-for-engineering` (the `ai4engineering`
+handle was already taken by someone else) -- "AI4Engineering" remains the
+actual brand/company name used in docs and content; only the GitHub org
+slug differs.
+
 ## Project constraint: open source only
 
 This project exists to demonstrate AI-driven FEA workflows using **only
@@ -29,8 +34,9 @@ deliverable must run on the free stack.
   miniforge base) interpreter.
 - MYSTRAN solver binary lives in `solver/`, gitignored (~24MB). Must be
   downloaded per README before anything can actually solve.
-- `gh` CLI is authenticated on this machine (account `mabvscode`). Repo:
-  `github.com/mabvscode/ai4engineering-nastran-fea` (private).
+- `gh` CLI is authenticated on this machine (account `mabvscode`, a member/
+  owner of the `ai-for-engineering` org). Repo:
+  `github.com/ai-for-engineering/nastran-fea` (private).
 - Local checkout lives at `Projets/AI4Engineering/nastran-fea/` -- the
   `AI4Engineering` parent folder is the umbrella, this repo is one project
   inside it (see Scope above).
