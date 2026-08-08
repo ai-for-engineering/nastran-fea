@@ -99,3 +99,5 @@ Things with no README equivalent (code-level, not usage-level):
 - `spikes/` -- exploratory proof-of-concept scripts from research spikes
   (not production code) -- e.g. `pynastrangui_screenshot_postscript.py`
   from issue #8's headless-rendering investigation
+- `docs/` -- GitHub Pages source (Jekyll, `minima` theme; posts live in
+  `docs/_posts/`); see README's Blog section

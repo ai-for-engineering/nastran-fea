@@ -1,0 +1,19 @@
+title: ai-for-engineering
+description: >-
+  AI-driven engineering workflows, built on open-source tools. First up:
+  finite element analysis in native Nastran bulk-data format.
+theme: minima
+minima:
+  skin: dark
+show_excerpts: true
+
+author:
+  name: Mohammed-Amine Bennaiem
+
+github_username: ai-for-engineering
+repository: ai-for-engineering/nastran-fea
+
+plugins:
+  - jekyll-feed
+
+markdown: kramdown

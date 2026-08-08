@@ -125,3 +125,10 @@ represent smeared stiffened-panel properties, and MYSTRAN's PSHELL rejects a
 nonzero MID4 (membrane-bending coupling) -- a real solver capability gap,
 not a bug in our pipeline. Worth knowing about before assuming any given
 anisotropic shell model will just run.
+
+## Blog
+
+`docs/` is a GitHub Pages site (Jekyll, `minima` theme) with write-ups of
+each case study -- the wingbox one is up first, covering the pipeline end
+to end (case-control patch, solver-compatibility gap, results, conversational
+demo, and honest caveats).
