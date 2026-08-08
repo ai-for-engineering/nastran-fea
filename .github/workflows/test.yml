@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    # requirements.txt includes pywin32 (Windows-only) and this project's
+    # own dev environment is Windows-based -- match it here rather than
+    # maintaining a separate Linux-safe dependency subset.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - run: python -m pytest scripts/test_mcp_server.py -v
