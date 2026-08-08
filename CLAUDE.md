@@ -4,12 +4,12 @@ Operating notes for working in this repo. See `README.md` for setup/usage.
 
 ## Scope
 
-This repo (`nastran-fea`) is the first project under the AI4Engineering
-umbrella -- AI4Engineering is the future company/brand name for exploring AI
-applications across engineering disciplines generally; this specific repo's
-scope is narrower: AI-driven FEA in native Nastran bulk-data format only.
-Don't conflate the two in docs/naming -- "AI4Engineering" is the umbrella,
-not this project's name.
+This repo (`nastran-fea`) is the first project under the ai-for-engineering
+umbrella -- ai-for-engineering is the future company/brand name for exploring
+AI applications across engineering disciplines generally; this specific
+repo's scope is narrower: AI-driven FEA in native Nastran bulk-data format
+only. Don't conflate the two in docs/naming -- "ai-for-engineering" is the
+umbrella, not this project's name.
 
 ## Project constraint: open source only
 

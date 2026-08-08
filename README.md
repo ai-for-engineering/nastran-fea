@@ -1,6 +1,6 @@
 # Nastran FEA
 
-Part of **AI4Engineering** -- an umbrella project exploring AI applications
+Part of **ai-for-engineering** -- an umbrella project exploring AI applications
 across engineering disciplines. This repo is the first exploration:
 AI-driven finite element analysis in native Nastran bulk-data format, using
 open-source tools only.
