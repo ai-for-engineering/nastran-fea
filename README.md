@@ -29,6 +29,33 @@ the `.F06` output for fatal errors -- MYSTRAN's process exit code and its
 (see `scripts/run_solver.py` docstring). It's also importable as
 `run_solver(bdf_path, solver_exe_path) -> SolverResult` for programmatic use.
 
+## MCP server
+
+`scripts/mcp_server.py` exposes the pipeline as MCP tool calls so a client
+like Claude can drive load → patch → solve → results conversationally
+instead of by running scripts by hand. Start it (stdio transport):
+
+```bash
+./venv/Scripts/python scripts/mcp_server.py
+```
+
+Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
+
+- `load_model(bdf_path)` -- parses with pyNastran, returns node/element/
+  property/material counts and any parse warnings. A deck that fails to
+  parse (e.g. OptiStruct-style, no SOL/CEND) comes back as a structured
+  `{"success": false, "error": ...}` rather than an exception, so a client
+  can recover by calling `patch_case_control` next.
+- `patch_case_control(bdf_path, output_path)` -- detects a missing SOL/CEND
+  case control section and rebuilds it (see the NASA CRM case-study patch
+  below), preserving any SPC/LOAD/DISPLACEMENT/STRESS/ECHO requests already
+  present in the original header. If the deck already has SOL/CEND, this is
+  a no-op copy to `output_path`.
+- `run_solver(bdf_path, solver_exe_path=None, timeout=None)` -- thin wrapper
+  around `run_solver()` below; same success/errors/paths result, as JSON.
+- `get_max_stress(op2_path)` -- parses an OP2 and returns the max von Mises
+  CQUAD4 stress (value, element ID, subcase) across all subcases.
+
 ## 3D visualization (pyNastranGUI)
 
 ```bash
