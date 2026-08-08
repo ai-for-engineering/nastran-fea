@@ -373,13 +373,22 @@ def test_camera_look_direction_aims_at_governing_element(two_property_bdf: Path)
     focal_point, camera_position, view_up = result
 
     # two_property_bdf's elements are flat in the XY plane (all grids have
-    # z=0), so the outward face normal must be +-Z -- the camera should be
-    # looking straight down/up the Z axis, offset from the focal point only
-    # in Z, with an in-plane (XY) view_up.
-    assert camera_position[0] == pytest.approx(focal_point[0], abs=1e-3)
-    assert camera_position[1] == pytest.approx(focal_point[1], abs=1e-3)
-    assert abs(camera_position[2] - focal_point[2]) > 1.0
-    assert view_up[2] == pytest.approx(0.0, abs=1e-6)
+    # z=0), so their outward face normal is exactly +Z -- the camera should
+    # sit at one of the 8 isometric octants (equal-magnitude x/y/z offset
+    # from the focal point) whose Z component agrees in sign with that
+    # normal, i.e. it's actually facing the element rather than away from
+    # it. Which of the (here, tied) octants sharing that Z sign gets picked
+    # is an implementation-defined tiebreak, not a meaningful invariant, so
+    # this doesn't assert an exact direction.
+    import numpy as np
+
+    offset = np.array(camera_position) - np.array(focal_point)
+    direction = offset / np.linalg.norm(offset)
+    assert np.allclose(np.abs(direction), 1.0 / np.sqrt(3.0), atol=1e-6)
+    assert direction[2] > 0
+
+    assert np.linalg.norm(view_up) == pytest.approx(1.0, abs=1e-6)
+    assert np.dot(view_up, direction) == pytest.approx(0.0, abs=1e-6)
 
     from pyNastran.bdf.bdf import BDF
 

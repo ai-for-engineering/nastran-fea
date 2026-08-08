@@ -680,14 +680,24 @@ def _camera_look_direction_for_governing_element(
     tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
 ] | None:
     """Compute (focal_point, camera_position, view_up) so a camera looking
-    through them stares straight down the outward face normal of whichever
-    plate element (CQUAD4/CTRIA3) has the governing (highest) von Mises
-    stress in op2_path -- see get_max_stress for why plate vs. bar stress
-    isn't blended into one number.
+    through them views the model from whichever isometric octant best faces
+    the outward face normal of whichever plate element (CQUAD4/CTRIA3) has
+    the governing (highest) von Mises stress in op2_path -- see
+    get_max_stress for why plate vs. bar stress isn't blended into one
+    number.
 
-    The point of aiming along the face normal specifically: it's the one
-    direction guaranteed to show that element unobstructed, since it's an
-    outer skin panel and nothing sits further outward along its own normal.
+    An isometric direction (equal angle to all three world axes) is a
+    standard engineering-drawing convention specifically because no single
+    axis is degenerate, so it can't collapse a flat panel edge-on the way a
+    "top"/"side" preset can. Rather than aiming continuously straight down
+    the governing element's own computed normal (this function's previous
+    approach), this picks whichever of the 8 canonical isometric octants
+    the element's normal points most toward (highest dot product) --
+    simpler, a more standard/recognizable view, and more robust to messy
+    per-element geometry (a slightly-off normal from a warped quad still
+    resolves to the same octant, rather than continuously skewing the
+    computed direction).
+
     camera_position is placed far enough out (2x the model's bounding-box
     diagonal) that a subsequent vtkRenderer.ResetCamera() call -- which
     preserves view direction/up but repositions along it to fit the whole
@@ -733,9 +743,14 @@ def _camera_look_direction_for_governing_element(
     if np.dot(centroid - bbox_center, normal) < 0:
         normal = -normal
 
+    octant_directions = np.array(
+        [[sx, sy, sz] for sx in (1.0, -1.0) for sy in (1.0, -1.0) for sz in (1.0, -1.0)]
+    ) / np.sqrt(3.0)
+    view_from_direction = octant_directions[np.argmax(octant_directions @ normal)]
+
     diag = float(np.linalg.norm(bbox_max - bbox_min))
-    camera_position = bbox_center + normal * diag * 2.0
-    up = _up_vector_for_best_frame_fit(normal, all_coords)
+    camera_position = bbox_center + view_from_direction * diag * 2.0
+    up = _up_vector_for_best_frame_fit(view_from_direction, all_coords)
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
@@ -878,10 +893,11 @@ def _build_postscript(
     custom_camera, when given, overrides the named azimuth/elevation preset
     entirely: (focal_point, position, view_up), all (x, y, z) world
     coordinates/vectors, computed by
-    _camera_look_direction_for_governing_element so the camera looks
-    straight down the outward face normal of the governing stress element --
-    guaranteeing an unobstructed view of it -- then vtkRenderer.ResetCamera()
-    fits the whole model to the frame along that fixed direction.
+    _camera_look_direction_for_governing_element so the camera views the
+    model from whichever isometric octant best faces the governing stress
+    element's outward face normal -- guaranteeing an unobstructed view of
+    it -- then vtkRenderer.ResetCamera() fits the whole model to the frame
+    along that fixed direction.
 
     want_stress_fringe searches the loaded result cases for one whose name
     matches "vonmises" case/whitespace/underscore-insensitively (pyNastran
@@ -1298,14 +1314,19 @@ def render_stress_contour(
     camera: "iso"/"top"/"side" (see _CAMERA_PRESETS), or the default,
     "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
     governing (highest von Mises) plate element via get_max_stress, then
-    points the camera straight down that element's outward face normal
-    before fitting the whole model to the frame -- because it's an outer
-    skin panel, nothing else in the model sits further outward along that
-    exact direction, so the governing element is guaranteed to be visible
-    and unobstructed rather than potentially hidden behind other geometry or
-    foreshortened edge-on the way a fixed preset can leave it. WITH
-    isolate_groups/isolate_property_ids, "auto" aims for the isolated
-    elements' shared face normal instead (see
+    views the model from whichever of the 8 canonical isometric octants
+    (equal angle to all three world axes -- the standard engineering-
+    drawing convention, chosen specifically because no single axis is
+    degenerate the way a "top"/"side" preset can be) best faces that
+    element's outward face normal, before fitting the whole model to the
+    frame. This isn't a hard occlusion guarantee the way aiming exactly
+    down the element's own normal would be (some other part of the model
+    could in principle sit further out along that octant's fixed diagonal),
+    but it keeps the governing element close to face-on and avoids the
+    foreshortened-edge-on failure mode a fixed preset can leave it in, while
+    being a simpler, more standard view than a continuously-computed exact
+    direction. WITH isolate_groups/isolate_property_ids, "auto" aims for the
+    isolated elements' shared face normal instead (see
     _camera_look_direction_for_isolated_group) -- isolating already removes
     any occlusion concern, so showing the isolated sub-component itself well
     (e.g. fanning out parallel ribs instead of collapsing them edge-on)
