@@ -336,6 +336,21 @@ def test_render_model_view_auto_camera_requires_op2(proper_bdf: Path, tmp_path: 
         ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), camera="auto")
 
 
+def test_render_model_view_isolate_matching_zero_elements(
+    two_property_bdf: Path, tmp_path: Path
+):
+    """Regression test: a .ses group (or property ID) can legitimately name
+    IDs that aren't in model.elements at all -- e.g. mass points. This used
+    to either silently render a blank scene, or (once render_stress_contour
+    started trimming the OP2 to match the isolated set) crash with an
+    opaque pyNastran-internal FatalError reading a degenerate, empty-tables
+    OP2. Should raise a clear reason instead."""
+    with pytest.raises(ValueError, match="matched 0 elements"):
+        ms.render_model_view(
+            str(two_property_bdf), str(tmp_path / "out.png"), isolate_property_ids=[999],
+        )
+
+
 @pytest.mark.skipif(
     not Path(DEFAULT_SOLVER_PATH).is_file(),
     reason="MYSTRAN solver not available in this environment.",
@@ -412,6 +427,44 @@ def test_camera_look_direction_isolated_group_no_plate_elements(
     assert result is None
 
 
+@pytest.mark.skipif(
+    not Path(DEFAULT_SOLVER_PATH).is_file(),
+    reason="MYSTRAN solver not available in this environment.",
+)
+def test_write_filtered_op2_keeps_only_requested_element(
+    two_property_bdf: Path, tmp_path: Path
+):
+    """_write_filtered_op2 is what fixes the real hang from issue #9:
+    pairing a filtered-down BDF with the ORIGINAL full-model OP2. Covers the
+    trim+round-trip directly rather than only indirectly through a full
+    render (see test_render_stress_contour_isolate_end_to_end below for
+    that)."""
+    solver_result = ms.run_solver(str(two_property_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    out_op2 = tmp_path / "filtered.OP2"
+    ms._write_filtered_op2(Path(solver_result["op2_path"]), {1}, out_op2)
+
+    from pyNastran.op2.op2 import OP2
+
+    trimmed = OP2(debug=False)
+    trimmed.read_op2(str(out_op2), build_dataframe=False)
+
+    # Check the unique element IDs actually present, not the .nelements
+    # attribute itself -- it's an internal bookkeeping value that doesn't
+    # necessarily round-trip through the OP2 writer/reader consistently,
+    # confirmed by inspecting it directly during development. The real
+    # correctness signal is what elements/data are actually in the array,
+    # which is exactly what pyNastranGUI reads to build the fringe.
+    cquad4 = trimmed.op2_results.stress.cquad4_stress[1]
+    assert set(cquad4.element_node[:, 0].tolist()) == {1}
+
+    # Other result categories are dropped entirely -- see _write_filtered_op2's
+    # docstring for why (their own node/element counts would mismatch the
+    # isolated subset just as badly as the untrimmed stress array did).
+    assert not trimmed.displacements
+
+
 def _rendering_deps_available() -> bool:
     try:
         import PyQt5  # noqa: F401
@@ -455,6 +508,30 @@ def test_render_stress_contour_end_to_end(two_property_bdf: Path, tmp_path: Path
         str(two_property_bdf), solver_result["op2_path"], str(output_png),
     )
     assert result["success"], result.get("errors")
+    assert result["fringe_set"] is True
+    assert output_png.is_file()
+    assert output_png.stat().st_size > 0
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_stress_contour_isolate_end_to_end(two_property_bdf: Path, tmp_path: Path):
+    """Regression test for issue #9's real hang: pairing an isolated
+    (filtered-down) BDF with the untrimmed full-model OP2. _write_filtered_op2
+    fixes it by trimming the OP2 to match; this exercises that fix through
+    the actual public tool rather than just the trim function directly."""
+    solver_result = ms.run_solver(str(two_property_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    output_png = tmp_path / "isolated_contour.png"
+    result = ms.render_stress_contour(
+        str(two_property_bdf), solver_result["op2_path"], str(output_png),
+        isolate_property_ids=[1], timeout=60,
+    )
+    assert result["success"], result.get("errors")
+    assert result["hidden_element_count"] == 1
     assert result["fringe_set"] is True
     assert output_png.is_file()
     assert output_png.stat().st_size > 0
