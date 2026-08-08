@@ -63,6 +63,19 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   are deliberately not blended into one number), each with element ID and
   governing subcase, e.g.
   `{"cquad4": {"von_mises": ..., "element_id": ..., "subcase": ...}, "cbar": {"max_stress": ..., ...}}`.
+- `render_model_view(bdf_path, output_png, ...)` /
+  `render_stress_contour(bdf_path, op2_path, output_png, ...)` -- render a
+  screenshot of the model (plain geometry, or colored by von Mises stress)
+  via a scripted pyNastranGUI session. Needs an active desktop session --
+  this is non-interactive, not display-less headless (see issue #8). Both
+  support `hide_groups`/`hide_property_ids` (remove these elements) and
+  `isolate_groups`/`isolate_property_ids` (keep ONLY these, e.g. "show only
+  the ribs") -- named groups are parsed from a case study's `.ses` file
+  when it has one (`ses_path`, see `ses_groups.py`), with property-ID
+  filtering as the fallback. `camera` picks a named preset (`"iso"`,
+  `"top"`, `"side"`); `zoom` tightens the frame (auto-applied when
+  isolating, since an isolated subset is usually small relative to the
+  original model).
 
 ## 3D visualization (pyNastranGUI)
 

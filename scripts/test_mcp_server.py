@@ -17,6 +17,15 @@ end-to-end test already exercises: it's a thin, already-tested wrapper
 (scripts/run_solver.py has its own docstring/commit-message history of
 manual verification against real MYSTRAN behavior) and duplicating that
 would just be re-testing run_solver.py, not this module.
+
+render_model_view/render_stress_contour are exercised end-to-end against a
+small synthetic two-property model (fast: a couple seconds of pyNastranGUI
+startup overhead, not the ~90s+ the full NASA CRM wingbox takes to load --
+that was verified manually during development, by eye, per issue #9's
+acceptance criteria, not re-verified here). Gated on the solver being
+present (to produce a real OP2) AND PyQt5/vtk being importable (pyNastranGUI
+deps) -- skipped cleanly with an explicit reason otherwise, same pattern as
+get_max_stress's end-to-end tests.
 """
 from __future__ import annotations
 
@@ -270,3 +279,101 @@ def test_get_max_stress_end_to_end_cbar(cbar_bdf: Path):
     # A real bending stress on a loaded cantilever, not a margin-of-safety
     # sentinel value (which would be ~1e10).
     assert 0 < cbar["max_stress"] < 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# render_model_view / render_stress_contour
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def two_property_bdf(tmp_path: Path) -> Path:
+    """Two CQUAD4 elements sharing an edge, each with its own PSHELL
+    property -- enough to exercise hide_property_ids meaningfully (hiding
+    one property leaves exactly one element)."""
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF()
+    model.add_grid(1, [0.0, 0.0, 0.0])
+    model.add_grid(2, [1.0, 0.0, 0.0])
+    model.add_grid(3, [2.0, 0.0, 0.0])
+    model.add_grid(4, [0.0, 1.0, 0.0])
+    model.add_grid(5, [1.0, 1.0, 0.0])
+    model.add_grid(6, [2.0, 1.0, 0.0])
+    model.add_cquad4(1, 1, [1, 2, 5, 4])
+    model.add_cquad4(2, 2, [2, 3, 6, 5])
+    model.add_pshell(1, mid1=1, t=0.1)
+    model.add_pshell(2, mid1=1, t=0.1)
+    model.add_mat1(1, 1.0e7, None, 0.3)
+    model.add_spc1(1, "123456", [1, 4])
+    model.add_force(1, 3, 100.0, [0.0, 0.0, 1.0])
+    model.add_force(1, 6, 100.0, [0.0, 0.0, 1.0])
+
+    bulk_path = tmp_path / "two_prop_bulk.bdf"
+    model.write_bdf(str(bulk_path), size=8, enddata=True)
+
+    path = tmp_path / "two_prop.bdf"
+    path.write_text(CBAR_CASE_CONTROL + bulk_path.read_text())
+    return path
+
+
+def test_render_model_view_missing_file(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        ms.render_model_view(str(tmp_path / "does_not_exist.bdf"), str(tmp_path / "out.png"))
+
+
+def test_render_model_view_invalid_camera(proper_bdf: Path, tmp_path: Path):
+    with pytest.raises(ValueError, match="camera"):
+        ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), camera="bogus")
+
+
+def test_render_model_view_hide_groups_without_ses_path(proper_bdf: Path, tmp_path: Path):
+    with pytest.raises(ValueError, match="ses_path"):
+        ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), hide_groups=["Skins"])
+
+
+def _rendering_deps_available() -> bool:
+    try:
+        import PyQt5  # noqa: F401
+        import vtk  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+_RENDER_SKIP_REASON = (
+    "MYSTRAN solver and/or PyQt5/vtk (pyNastranGUI deps) not available in "
+    "this environment -- see README's solver/GUI setup sections."
+)
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_model_view_end_to_end(two_property_bdf: Path, tmp_path: Path):
+    output_png = tmp_path / "view.png"
+    result = ms.render_model_view(
+        str(two_property_bdf), str(output_png), hide_property_ids=[2],
+    )
+    assert result["success"], result.get("errors")
+    assert result["hidden_element_count"] == 1
+    assert output_png.is_file()
+    assert output_png.stat().st_size > 0
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_stress_contour_end_to_end(two_property_bdf: Path, tmp_path: Path):
+    solver_result = ms.run_solver(str(two_property_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    output_png = tmp_path / "contour.png"
+    result = ms.render_stress_contour(
+        str(two_property_bdf), solver_result["op2_path"], str(output_png),
+    )
+    assert result["success"], result.get("errors")
+    assert result["fringe_set"] is True
+    assert output_png.is_file()
+    assert output_png.stat().st_size > 0

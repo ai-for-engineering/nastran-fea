@@ -25,10 +25,20 @@ Tools:
         module's docstring for why MYSTRAN's own exit code can't be trusted.
 
     get_max_stress(op2_path)
-        Parse an OP2 with pyNastran and return the max von Mises CQUAD4
-        stress across all subcases (value, element ID, subcase), correctly
-        handling the fact that each element appears twice in the stress
-        array (once per shell fiber location) -- see CLAUDE.md's Gotchas.
+        Parse an OP2 with pyNastran and return the peak stress per element
+        type present (plate elements report von_mises, bar elements report
+        max_stress -- these are different physical quantities, deliberately
+        not blended into one number) across all subcases.
+
+    render_model_view(bdf_path, output_png, ...)
+    render_stress_contour(bdf_path, op2_path, output_png, ...)
+        Render a screenshot of the model (plain geometry, or colored by von
+        Mises stress) via a scripted pyNastranGUI session. Both support
+        hiding elements by named group (parsed from a Patran/HyperMesh .ses
+        session file, when the case study has one -- see ses_groups.py) or
+        by raw PSHELL/PBAR property ID. See GitHub issues #8/#9 for how this
+        works and its real limitations (needs an active desktop session,
+        not display-less headless).
 
 Run directly for stdio transport (the default an MCP client like Claude
 Desktop/Code expects):
@@ -41,7 +51,9 @@ import dataclasses
 import os
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +67,7 @@ from run_solver import (  # noqa: E402
     DEFAULT_TIMEOUT_S,
     run_solver as _run_solver,
 )
+from ses_groups import parse_ses_groups  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
@@ -382,6 +395,422 @@ def get_max_stress(op2_path: str) -> dict[str, Any]:
         raise ValueError(f"No stress results found in {path}")
 
     return peaks
+
+
+# ---------------------------------------------------------------------------
+# render_model_view / render_stress_contour
+# ---------------------------------------------------------------------------
+
+# Deliberately minimal (named presets, not full 6-DOF control) per issue #9's
+# scope. (azimuth, elevation) in degrees, applied after a camera reset.
+_CAMERA_PRESETS = {
+    "iso": (45.0, 20.0),
+    "top": (0.0, 89.0),
+    "side": (90.0, 0.0),
+}
+
+_DEFAULT_RENDER_TIMEOUT_S = 300
+
+
+def _eids_for_groups(names: list[str], ses_path: str | None) -> set[int]:
+    if not ses_path:
+        raise ValueError("a *_groups argument was given but ses_path was not provided")
+    groups = parse_ses_groups(ses_path)
+    eids: set[int] = set()
+    for name in names:
+        if name not in groups:
+            raise ValueError(
+                f"Group {name!r} not found in {ses_path}; "
+                f"available groups: {sorted(groups)}"
+            )
+        eids.update(groups[name])
+    return eids
+
+
+def _eids_for_property_ids(bdf_path: Path, property_ids: list[int]) -> set[int]:
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF()
+    model.read_bdf(str(bdf_path), xref=False)
+    pid_set = set(property_ids)
+    return {eid for eid, elem in model.elements.items() if elem.pid in pid_set}
+
+
+def _resolve_hidden_eids(
+    bdf_path: Path,
+    hide_groups: list[str] | None,
+    hide_property_ids: list[int] | None,
+    isolate_groups: list[str] | None,
+    isolate_property_ids: list[int] | None,
+    ses_path: str | None,
+) -> set[int]:
+    """Figure out which element IDs to exclude from the render.
+
+    hide_* name elements to remove (everything else stays). isolate_* name
+    the elements to KEEP (everything else is removed) -- the complement --
+    for "show only the ribs" style views, which also has the side effect of
+    letting the camera fit tightly to just that subset (see
+    render_model_view's docstring). Mutually exclusive with hide_*: mixing
+    "remove these" and "keep only these" in one call is ambiguous, so this
+    raises rather than guessing which one wins.
+
+    Named groups are parsed from ses_path (a Patran/HyperMesh .ses session
+    file -- see ses_groups.py and issue #9 for why this is preferred over
+    raw property IDs when available).
+    """
+    hide_requested = bool(hide_groups or hide_property_ids)
+    isolate_requested = bool(isolate_groups or isolate_property_ids)
+    if hide_requested and isolate_requested:
+        raise ValueError(
+            "hide_* and isolate_* are mutually exclusive -- pick one "
+            "(remove these elements, or keep only these elements)"
+        )
+
+    if isolate_requested:
+        keep: set[int] = set()
+        if isolate_groups:
+            keep.update(_eids_for_groups(isolate_groups, ses_path))
+        if isolate_property_ids:
+            keep.update(_eids_for_property_ids(bdf_path, isolate_property_ids))
+
+        from pyNastran.bdf.bdf import BDF
+
+        model = BDF()
+        model.read_bdf(str(bdf_path), xref=False)
+        return set(model.elements.keys()) - keep
+
+    hidden: set[int] = set()
+    if hide_groups:
+        hidden.update(_eids_for_groups(hide_groups, ses_path))
+    if hide_property_ids:
+        hidden.update(_eids_for_property_ids(bdf_path, hide_property_ids))
+    return hidden
+
+
+def _write_filtered_bdf(bdf_path: Path, hidden_eids: set[int], output_path: Path) -> None:
+    """Write a copy of bdf_path with hidden_eids removed, to output_path.
+
+    Filtering at the BDF level (rather than calling pyNastranGUI's
+    hide_eids on the loaded model) sidesteps a real performance/hang
+    concern found during issue #8's spike: hide_eids did not complete
+    within 180s (possibly hung, not just slow) on the full ~35k-element
+    wingbox model. Rewriting the deck without the unwanted elements before
+    the GUI ever loads it is simpler and avoids that entirely.
+    """
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF()
+    model.read_bdf(str(bdf_path), xref=False)
+    for eid in hidden_eids:
+        model.elements.pop(eid, None)
+    model.write_bdf(str(output_path), size=8, enddata=True)
+
+
+def _build_postscript(
+    output_png: Path, camera: str, zoom: float, want_stress_fringe: bool
+) -> str:
+    """Build a pyNastranGUI postscript (see spikes/pynastrangui_screenshot_
+    postscript.py and issue #8) that sets a camera preset, optionally
+    selects a von Mises stress result as the active fringe, takes a
+    screenshot, and exits.
+
+    magnify=1 is passed to on_take_screenshot explicitly: pyNastranGUI's
+    default (magnify=5, i.e. vtkRenderLargeImage-based tiling) renders the
+    3D geometry at 5x resolution but NOT the 2D overlay actors (legend,
+    orientation axes) at the same scale, making them look disproportionately
+    huge relative to the model in the final image -- confirmed by comparing
+    screenshots with and without an explicit magnify during development.
+
+    zoom (>1 zooms in) is applied after the camera preset via self.zoom() --
+    plain camera.Reset() alone leaves substantial empty margin around the
+    model rather than filling the frame; see render_model_view's docstring
+    for when to increase this (isolate_* callers get a non-1.0 default
+    automatically).
+
+    want_stress_fringe searches the loaded result cases for one whose name
+    matches "vonmises" case/whitespace/underscore-insensitively (pyNastran
+    labels it 'vonMises', confirmed by inspecting self.result_cases during
+    the spike) and reports whether it found one via a small sidecar file
+    (<output_png>.fringe_set, "1" or "0") next to the screenshot, since the
+    postscript runs in a separate subprocess with no other way to report
+    back to the caller. Falls back to whatever pyNastranGUI displays by
+    default (e.g. for a bar-only model with no plate von Mises result) if
+    no matching case is found.
+    """
+    azimuth, elevation = _CAMERA_PRESETS[camera]
+    output_png_repr = repr(str(output_png))
+    fringe_flag_repr = repr(str(output_png) + ".fringe_set")
+
+    fringe_block = ""
+    if want_stress_fringe:
+        fringe_block = f"""
+_fringe_set = False
+for _key, _val in self.result_cases.items():
+    try:
+        _obj, (_i, _resname) = _val
+    except Exception:
+        continue
+    if "vonmises" in _resname.lower().replace(" ", "").replace("_", ""):
+        self.on_fringe(_key)
+        _fringe_set = True
+        break
+with open({fringe_flag_repr}, "w") as _f:
+    _f.write("1" if _fringe_set else "0")
+"""
+
+    return f"""\
+self.on_reset_camera()
+_camera = self.rend.GetActiveCamera()
+_camera.Azimuth({azimuth})
+_camera.Elevation({elevation})
+self.rend.ResetCameraClippingRange()
+self.zoom({zoom})
+{fringe_block}
+self.on_take_screenshot({output_png_repr}, magnify=1, show_msg=False)
+
+import sys
+sys.exit(0)
+"""
+
+
+def _run_pynastrangui(
+    bdf_path: Path, op2_path: Path | None, postscript_path: Path, timeout: float
+) -> subprocess.CompletedProcess:
+    args = [sys.executable, "-m", "pyNastran.gui.gui", "-i", str(bdf_path)]
+    if op2_path is not None:
+        args += ["-o", str(op2_path)]
+    args += ["-f", "nastran", "-p", str(postscript_path)]
+
+    return subprocess.run(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _render(
+    *,
+    bdf_path: str,
+    op2_path: str | None,
+    output_png: str,
+    hide_groups: list[str] | None,
+    hide_property_ids: list[int] | None,
+    isolate_groups: list[str] | None,
+    isolate_property_ids: list[int] | None,
+    ses_path: str | None,
+    camera: str,
+    zoom: float | None,
+    timeout: float | None,
+) -> dict[str, Any]:
+    in_path = Path(bdf_path).resolve()
+    if not in_path.is_file():
+        raise FileNotFoundError(f"BDF file not found: {in_path}")
+
+    resolved_op2_path = None
+    if op2_path is not None:
+        resolved_op2_path = Path(op2_path).resolve()
+        if not resolved_op2_path.is_file():
+            raise FileNotFoundError(f"OP2 file not found: {resolved_op2_path}")
+
+    if camera not in _CAMERA_PRESETS:
+        raise ValueError(
+            f"Unknown camera preset {camera!r}; choose from {sorted(_CAMERA_PRESETS)}"
+        )
+
+    out_png = Path(output_png).resolve()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    render_timeout = timeout if timeout is not None else _DEFAULT_RENDER_TIMEOUT_S
+    is_isolating = bool(isolate_groups or isolate_property_ids)
+    # Isolating typically leaves a small subset of a much larger scene --
+    # fit tighter by default so it actually fills the frame (see
+    # render_model_view's docstring). Plain hide/no-filter calls keep the
+    # un-zoomed default since the remaining geometry is usually still most
+    # of the original scene.
+    resolved_zoom = zoom if zoom is not None else (1.8 if is_isolating else 1.0)
+
+    hidden_eids = _resolve_hidden_eids(
+        in_path, hide_groups, hide_property_ids, isolate_groups, isolate_property_ids, ses_path
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        render_bdf_path = in_path
+        if hidden_eids:
+            render_bdf_path = tmpdir_path / "filtered.bdf"
+            _write_filtered_bdf(in_path, hidden_eids, render_bdf_path)
+
+        postscript_path = tmpdir_path / "postscript.py"
+        postscript_path.write_text(
+            _build_postscript(
+                out_png, camera, resolved_zoom, want_stress_fringe=resolved_op2_path is not None
+            )
+        )
+        fringe_flag_path = Path(str(out_png) + ".fringe_set")
+        fringe_flag_path.unlink(missing_ok=True)
+
+        try:
+            proc = _run_pynastrangui(render_bdf_path, resolved_op2_path, postscript_path, render_timeout)
+        except subprocess.TimeoutExpired as exc:
+            hint = ""
+            if is_isolating and resolved_op2_path is not None:
+                hint = (
+                    " (known slow/hanging path -- see issue #9: loading full-"
+                    "model results against a heavily-isolated/reduced geometry "
+                    "subset can take excessively long; consider render_model_view "
+                    "without op2_path for isolate_* views instead)"
+                )
+            raise RuntimeError(
+                f"pyNastranGUI did not finish within {render_timeout}s{hint}"
+            ) from exc
+
+    fringe_set = None
+    if fringe_flag_path.is_file():
+        fringe_set = fringe_flag_path.read_text().strip() == "1"
+        fringe_flag_path.unlink()
+
+    if not out_png.is_file():
+        return {
+            "success": False,
+            "output_png": str(out_png),
+            "hidden_element_count": len(hidden_eids),
+            "errors": [
+                f"pyNastranGUI did not produce {out_png}",
+                f"returncode={proc.returncode}",
+                proc.stdout[-2000:] if proc.stdout else "",
+            ],
+        }
+
+    result: dict[str, Any] = {
+        "success": True,
+        "output_png": str(out_png),
+        "hidden_element_count": len(hidden_eids),
+        "returncode": proc.returncode,
+    }
+    if fringe_set is not None:
+        result["fringe_set"] = fringe_set
+    return result
+
+
+@mcp.tool()
+def render_model_view(
+    bdf_path: str,
+    output_png: str,
+    hide_groups: list[str] | None = None,
+    hide_property_ids: list[int] | None = None,
+    isolate_groups: list[str] | None = None,
+    isolate_property_ids: list[int] | None = None,
+    ses_path: str | None = None,
+    camera: str = "iso",
+    zoom: float | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Render a plain geometry screenshot (no results) of bdf_path to
+    output_png, via a scripted pyNastranGUI session -- see issues #8/#9 for
+    how this works and its real limitations (needs an active desktop
+    session; this is non-interactive, not display-less headless).
+
+    hide_groups/hide_property_ids: remove these elements from the view,
+    keep everything else. isolate_groups/isolate_property_ids: the inverse
+    -- keep ONLY these elements, remove everything else, e.g. "show only
+    the ribs". Mutually exclusive with hide_* (raises if both are given).
+    Named groups are parsed from ses_path (a Patran/HyperMesh .ses session
+    file -- see ses_groups.parse_ses_groups); only some case studies ship
+    one of these. *_property_ids filter by raw PSHELL/PBAR property ID
+    instead (or in addition) -- the fallback when no .ses file exists.
+
+    camera: one of "iso", "top", "side" (see _CAMERA_PRESETS) -- a generic
+    preset chosen for the whole original model may not suit an isolated
+    subset's actual shape well (e.g. isolating thin, mostly-planar groups
+    like ribs can render them near edge-on from "iso"); there's no
+    automatic best-angle selection here, just the same three presets
+    applied to whatever's left after filtering.
+    zoom: >1 zooms in after the camera preset is applied (plain camera
+    reset alone leaves significant empty margin around the model). Default
+    is 1.0 (no zoom) normally, but 1.8 automatically when isolate_* is used
+    -- an isolated subset is typically small relative to the original
+    scene, so the tighter default actually fills the frame instead of
+    leaving it mostly empty (verified by eye during development: 1.8 filled
+    the frame well for a ~6,200-of-35,489-element isolated group without
+    cropping it). Override explicitly if 1.8 crops or under-fills your case.
+
+    Raises for infrastructure problems (missing bdf_path, unknown camera
+    preset, unknown group name, hide_*/isolate_* both given, pyNastranGUI
+    timing out). A render that runs but doesn't produce the expected PNG is
+    returned as {"success": False, "errors": [...]} instead.
+    """
+    return _render(
+        bdf_path=bdf_path,
+        op2_path=None,
+        output_png=output_png,
+        hide_groups=hide_groups,
+        hide_property_ids=hide_property_ids,
+        isolate_groups=isolate_groups,
+        isolate_property_ids=isolate_property_ids,
+        ses_path=ses_path,
+        camera=camera,
+        zoom=zoom,
+        timeout=timeout,
+    )
+
+
+@mcp.tool()
+def render_stress_contour(
+    bdf_path: str,
+    op2_path: str,
+    output_png: str,
+    hide_groups: list[str] | None = None,
+    hide_property_ids: list[int] | None = None,
+    isolate_groups: list[str] | None = None,
+    isolate_property_ids: list[int] | None = None,
+    ses_path: str | None = None,
+    camera: str = "iso",
+    zoom: float | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Same as render_model_view, but also loads op2_path and colors the
+    view by von Mises stress. The result dict includes "fringe_set": True
+    if a von Mises result case was found and applied, False if the OP2 has
+    no such case (e.g. a bar-only model -- see get_max_stress's "max_stress"
+    vs "von_mises" distinction) and pyNastranGUI's default coloring was
+    left in place instead.
+
+    Caveat verified during development: pyNastranGUI's own "Stress vonMises"
+    fringe/legend is a GUI-internal combined scalar across element types --
+    when CBAR elements are visible in frame, the legend's reported max can
+    come from a bar element (some bar-stress equivalent the GUI computes
+    internally), not necessarily a plate element's true von Mises. Confirmed
+    by checking the element ID the legend reported as "Max" against the BDF
+    directly. This is NOT the same value/quantity as get_max_stress's
+    "von_mises" (plates only) or "max_stress" (bars, raw direct stress) --
+    don't assume the on-screen legend matches get_max_stress's output when
+    bar elements share the frame with plates.
+
+    Known limitation: combining isolate_groups/isolate_property_ids with
+    op2_path can hang or take excessively long when the isolated subset is
+    a small fraction of a much larger model -- loading full-model results
+    against heavily-reduced geometry appears to hit a slow path in
+    pyNastran (observed: >180s / didn't complete for a ~6,200-of-35,489
+    isolated subset, vs. ~90s for the full model). If you hit this, use
+    render_model_view (no results) for isolated views instead until this is
+    resolved -- see issue #9.
+    """
+    return _render(
+        bdf_path=bdf_path,
+        op2_path=op2_path,
+        output_png=output_png,
+        hide_groups=hide_groups,
+        hide_property_ids=hide_property_ids,
+        isolate_groups=isolate_groups,
+        isolate_property_ids=isolate_property_ids,
+        ses_path=ses_path,
+        camera=camera,
+        zoom=zoom,
+        timeout=timeout,
+    )
 
 
 if __name__ == "__main__":

@@ -82,10 +82,20 @@ Things with no README equivalent (code-level, not usage-level):
 - `scripts/run_solver.py` -- generic MYSTRAN invocation wrapper (see
   Gotchas); not tied to any specific model
 - `scripts/mcp_server.py` -- MCP server wrapping the pipeline
-  (load_model/patch_case_control/run_solver/get_max_stress) as tool calls;
-  see README's MCP server section. Imports `run_solver.py` rather than
-  duplicating it. `scripts/test_mcp_server.py` has the smoke tests.
+  (load_model/patch_case_control/run_solver/get_max_stress/
+  render_model_view/render_stress_contour) as tool calls; see README's MCP
+  server section. Imports `run_solver.py` and `ses_groups.py` rather than
+  duplicating them. `scripts/test_mcp_server.py` has the smoke tests.
+- `scripts/ses_groups.py` -- parser for Patran/HyperMesh `.ses` session
+  files' named element-group definitions (NOT Nastran format -- some case
+  studies ship one as a bonus alongside the actual deck). See its docstring
+  and issue #9. `scripts/test_ses_groups.py` has the tests.
 - `case_studies/nasa_crm_wingbox/` -- the current (only) case study, a real
-  publicly-licensed NASA structural assembly (gitignored, see README for
-  source/license and the OptiStruct→MYSTRAN case-control patch)
+  publicly-licensed NASA structural assembly (mostly gitignored -- see
+  README for source/license and the OptiStruct→MYSTRAN case-control patch;
+  `original/` vs `derived/` split and provenance documented in its own
+  tracked README.md)
 - `solver/` -- the MYSTRAN binary, gitignored, download per README
+- `spikes/` -- exploratory proof-of-concept scripts from research spikes
+  (not production code) -- e.g. `pynastrangui_screenshot_postscript.py`
+  from issue #8's headless-rendering investigation
