@@ -68,6 +68,10 @@ Things with no README equivalent (code-level, not usage-level):
 
 - `scripts/run_solver.py` -- generic MYSTRAN invocation wrapper (see
   Gotchas); not tied to any specific model
+- `scripts/mcp_server.py` -- MCP server wrapping the pipeline
+  (load_model/patch_case_control/run_solver/get_max_stress) as tool calls;
+  see README's MCP server section. Imports `run_solver.py` rather than
+  duplicating it. `scripts/test_mcp_server.py` has the smoke tests.
 - `case_studies/nasa_crm_wingbox/` -- the current (only) case study, a real
   publicly-licensed NASA structural assembly (gitignored, see README for
   source/license and the OptiStruct→MYSTRAN case-control patch)
