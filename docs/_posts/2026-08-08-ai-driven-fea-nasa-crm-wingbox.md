@@ -174,6 +174,60 @@ before pyNastranGUI ever sees it. Geometry and results end up the same
 size, the mismatch that caused the slow path disappears, and the same
 case that wouldn't finish in 240 seconds now loads in about 12.
 
+That fix was verified against one group (the ribs). Before trusting it,
+I rendered every named group in the model's `.ses` file the same way —
+which turned up two more real bugs, both specific to element types the
+ribs test hadn't exercised:
+
+- **An all-bar group (`Stiffeners`, 14,134 CBAR elements) hung too**, even
+  with the OP2 already trimmed. pyNastranGUI turned out to synthesize its
+  own bar-stress-derived "vonMises" case internally even though CBARs don't
+  have a true von Mises value, and applying that synthesized case to a
+  large all-bar selection was the actual slow path. Since a bar element was
+  never going to get a meaningful von Mises fringe anyway, the fix was to
+  stop trying: check first whether a real plate von Mises result exists in
+  what's being loaded, and skip the fringe attempt entirely if not.
+- **A mass-point group (`LUMPED_MASS`) isn't made of elements at all** —
+  those IDs are `CONM2` mass points, tracked separately from the regular
+  elements in the deck. Isolating it matched zero real elements, which
+  produced a technically-empty OP2 that pyNastran's own reader rejected as
+  a fatal error. Now it's caught up front with a clear message instead.
+
+Here's every real (non-mass) group in the model, each with its own
+correctly zoomed, correctly framed stress contour — the actual point of
+all of this:
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_skin_lwr_stress.png" alt="Von Mises stress contour on the lower skin panel" style="max-width:100%;">
+
+*Lower skin (2,322 CQUAD4 elements) — this is where the model-wide peak
+actually lives: 39,983.7 psi on element 2854, the same number
+`get_max_stress` reported for the whole model back at the top of this
+post.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_skin_upr_stress.png" alt="Von Mises stress contour on the upper skin panel" style="max-width:100%;">
+
+*Upper skin (2,322 CQUAD4 elements) — a different, lower peak (38,947.6
+psi), with its own distinct hot spots.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_shearwebs_stress.png" alt="Von Mises stress contour on the shear webs" style="max-width:100%;">
+
+*Shear webs (8,880 elements) — peak 30,575.1 psi.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_spars_lete_stress.png" alt="Von Mises stress contour on the leading- and trailing-edge spars" style="max-width:100%;">
+
+*Leading- and trailing-edge spars (1,611 elements) — two distinct spar
+runs, each with its own stress pattern, peak 34,046.9 psi.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stiffeners_stress.png" alt="Isolated stiffener elements, uncolored since bars have no von Mises value" style="max-width:100%;">
+
+*Stiffeners (14,134 CBAR elements) — no fringe, correctly: bars don't have
+a von Mises value (see `get_max_stress`'s `max_stress` vs `von_mises`
+distinction), so this shows geometry only rather than pretending otherwise.
+This is the group that exposed the bar-stress hang above.*
+
+Every one of these came from the exact same tool call, just swapping which
+group name goes into `isolate_groups`.
+
 ## Honest caveats
 
 In the spirit of not overselling this: a few things this pipeline
