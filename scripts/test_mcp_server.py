@@ -331,6 +331,48 @@ def test_render_model_view_hide_groups_without_ses_path(proper_bdf: Path, tmp_pa
         ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), hide_groups=["Skins"])
 
 
+def test_render_model_view_auto_camera_requires_op2(proper_bdf: Path, tmp_path: Path):
+    with pytest.raises(ValueError, match="camera='auto'"):
+        ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), camera="auto")
+
+
+@pytest.mark.skipif(
+    not Path(DEFAULT_SOLVER_PATH).is_file(),
+    reason="MYSTRAN solver not available in this environment.",
+)
+def test_camera_look_direction_aims_at_governing_element(two_property_bdf: Path):
+    """_camera_look_direction_for_governing_element is pure pyNastran/numpy
+    (no GUI needed) -- covers the auto-camera math directly rather than only
+    indirectly through a full render, since a full render also needs
+    PyQt5/vtk (see _RENDER_SKIP_REASON) and is much slower."""
+    solver_result = ms.run_solver(str(two_property_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    peaks = ms.get_max_stress(solver_result["op2_path"])
+    governing_eid = peaks["cquad4"]["element_id"]
+
+    result = ms._camera_look_direction_for_governing_element(
+        two_property_bdf, Path(solver_result["op2_path"])
+    )
+    assert result is not None
+    focal_point, camera_position, view_up = result
+
+    # two_property_bdf's elements are flat in the XY plane (all grids have
+    # z=0), so the outward face normal must be +-Z -- the camera should be
+    # looking straight down/up the Z axis, offset from the focal point only
+    # in Z, with an in-plane (XY) view_up.
+    assert camera_position[0] == pytest.approx(focal_point[0], abs=1e-3)
+    assert camera_position[1] == pytest.approx(focal_point[1], abs=1e-3)
+    assert abs(camera_position[2] - focal_point[2]) > 1.0
+    assert view_up[2] == pytest.approx(0.0, abs=1e-6)
+
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF()
+    model.read_bdf(str(two_property_bdf), xref=False)
+    assert governing_eid in model.elements
+
+
 def _rendering_deps_available() -> bool:
     try:
         import PyQt5  # noqa: F401

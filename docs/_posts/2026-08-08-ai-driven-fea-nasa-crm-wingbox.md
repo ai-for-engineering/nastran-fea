@@ -100,10 +100,14 @@ semi-span research model under a design GVW load case, not a certified
 aircraft, so treat the absolute number as a sanity check on the pipeline
 rather than a design conclusion.
 
-<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stress_iso.png" alt="Von Mises stress contour on the NASA CRM wingbox, isometric view" style="max-width:100%;">
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stress_iso.png" alt="Von Mises stress contour on the NASA CRM wingbox, camera aimed at the governing stress element" style="max-width:100%;">
 
 *Von Mises stress contour, rendered directly from the solved model via
-`render_stress_contour` — no manual screenshot, no commercial post-processor.*
+`render_stress_contour` — no manual screenshot, no commercial post-processor.
+The camera here isn't a fixed preset: it looks up the governing (highest
+von Mises) element and points straight down its outward face normal, so
+that element is guaranteed to be visible and unobstructed rather than
+potentially hidden behind other geometry.*
 
 ## The demo: driving it conversationally
 
