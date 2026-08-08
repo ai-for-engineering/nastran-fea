@@ -58,7 +58,7 @@ from run_solver import (  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
-mcp = FastMCP("ai4engineering-wingbox")
+mcp = FastMCP("nastran-fea-wingbox")
 
 
 # ---------------------------------------------------------------------------

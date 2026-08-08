@@ -1,6 +1,9 @@
-# AI4Engineering
+# Nastran FEA
 
-Exploring AI applications for aerospace mechanical/stress engineering.
+Part of **AI4Engineering** -- an umbrella project exploring AI applications
+across engineering disciplines. This repo is the first exploration:
+AI-driven finite element analysis in native Nastran bulk-data format, using
+open-source tools only.
 
 Case study: solving a real, publicly-published NASA structural assembly
 (the Common Research Model wingbox) using open-source tools only — Gmsh
