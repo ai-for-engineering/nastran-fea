@@ -4,11 +4,12 @@ Smoke tests for scripts/mcp_server.py.
 load_model and patch_case_control are tested fully against small synthetic
 BDFs generated here -- no external data needed.
 
-get_max_stress is exercised end-to-end against a real MYSTRAN-produced OP2:
-the test builds a tiny one-element model, patches/solves it with the actual
-MYSTRAN binary, and checks the parsed max-stress result -- but only if
+get_max_stress is exercised end-to-end against real MYSTRAN-produced OP2s:
+one test solves a tiny one-CQUAD4 model, another solves a simple cantilever
+CBAR beam, each checking the parsed max-stress result for that element
+type's branch (von_mises for plates, max_stress for bars) -- but only if
 solver/ (gitignored, ~24MB, not present in every checkout/worktree -- see
-CLAUDE.md) is actually available. Otherwise that one test is skipped with an
+CLAUDE.md) is actually available. Otherwise those tests are skipped with an
 explicit reason rather than faked.
 
 run_solver is not separately tested here beyond what get_max_stress's
@@ -70,6 +71,26 @@ FORCE,3,2,,1.0,1.0,0.0,0.0
 ENDDATA
 """
 
+# A simple cantilever beam (single CBAR, fixed at node 1, transverse tip load
+# at node 2) -- used to exercise get_max_stress's bar-type ("max_stress",
+# not "von_mises") branch against real MYSTRAN output. Built via pyNastran's
+# API (see the cbar_bdf fixture) rather than hand-typed card text: PBAR's
+# stress-recovery-point fields (C1/C2/D1/D2/E1/E2/F1/F2) span a continuation
+# line, and without them MYSTRAN recovers stress at y=z=0 -- giving ~zero
+# bending stress even under a real bending load -- so getting that
+# continuation line exactly right matters, which the API guarantees and
+# hand-typed text doesn't.
+CBAR_CASE_CONTROL = """\
+SOL 101
+CEND
+ECHO = NONE
+SPC = 1
+LOAD = 1
+DISPLACEMENT = ALL
+STRESS = ALL
+BEGIN BULK
+"""
+
 
 @pytest.fixture
 def proper_bdf(tmp_path: Path) -> Path:
@@ -82,6 +103,33 @@ def proper_bdf(tmp_path: Path) -> Path:
 def optistruct_bdf(tmp_path: Path) -> Path:
     path = tmp_path / "optistruct.bdf"
     path.write_text(OPTISTRUCT_BDF)
+    return path
+
+
+@pytest.fixture
+def cbar_bdf(tmp_path: Path) -> Path:
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF()
+    model.add_grid(1, [0.0, 0.0, 0.0])
+    model.add_grid(2, [10.0, 0.0, 0.0])
+    model.add_cbar(1, 1, [1, 2], x=[0.0, 0.0, 1.0], g0=None)
+    # Rectangular-section stress recovery points at the four corners
+    # (+-0.5 in each direction) so bending stress is actually nonzero.
+    model.add_pbar(
+        1, 1, A=1.0, i1=0.0833, i2=0.0833, j=0.1406,
+        c1=0.5, c2=0.5, d1=0.5, d2=-0.5,
+        e1=-0.5, e2=-0.5, f1=-0.5, f2=0.5,
+    )
+    model.add_mat1(1, 1.0e7, None, 0.3)
+    model.add_spc1(1, "123456", [1])
+    model.add_force(1, 2, 100.0, [0.0, 1.0, 0.0])
+
+    bulk_path = tmp_path / "cbar_bulk.bdf"
+    model.write_bdf(str(bulk_path), size=8, enddata=True)
+
+    path = tmp_path / "cbar.bdf"
+    path.write_text(CBAR_CASE_CONTROL + bulk_path.read_text())
     return path
 
 
@@ -181,13 +229,44 @@ def test_get_max_stress_missing_file(tmp_path: Path):
     ),
 )
 def test_get_max_stress_end_to_end(proper_bdf: Path):
-    """Solve the tiny synthetic model for real and check the max-stress
-    parsing logic (including the double-fiber-entry-per-element handling)
-    against genuine MYSTRAN OP2 output."""
+    """Solve the tiny synthetic CQUAD4 model for real and check the
+    max-stress parsing logic (including the double-fiber-entry-per-element
+    handling) against genuine MYSTRAN OP2 output."""
     solver_result = ms.run_solver(str(proper_bdf))
     assert solver_result["success"], solver_result["errors"]
 
     stress_result = ms.get_max_stress(solver_result["op2_path"])
-    assert stress_result["element_id"] == 1
-    assert stress_result["subcase"] == 1
-    assert stress_result["von_mises"] > 0
+    assert set(stress_result.keys()) == {"cquad4"}
+    cquad4 = stress_result["cquad4"]
+    assert cquad4["element_id"] == 1
+    assert cquad4["subcase"] == 1
+    assert cquad4["von_mises"] > 0
+
+
+@pytest.mark.skipif(
+    not Path(DEFAULT_SOLVER_PATH).is_file(),
+    reason=(
+        "MYSTRAN solver binary not present (solver/ is gitignored, ~24MB -- "
+        "see README setup instructions); cannot produce a real OP2 to parse "
+        "in this environment."
+    ),
+)
+def test_get_max_stress_end_to_end_cbar(cbar_bdf: Path):
+    """Solve a simple cantilever CBAR beam for real and check the bar-type
+    branch: reports "max_stress" (not "von_mises", since bar direct stress
+    isn't the same physical quantity as plate von Mises), and doesn't get
+    fooled by the large margin-of-safety sentinel values (~1e10) that
+    pyNastran fills in when a margin isn't computed."""
+    solver_result = ms.run_solver(str(cbar_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    stress_result = ms.get_max_stress(solver_result["op2_path"])
+    assert set(stress_result.keys()) == {"cbar"}
+    cbar = stress_result["cbar"]
+    assert cbar["element_id"] == 1
+    assert cbar["subcase"] == 1
+    assert "max_stress" in cbar
+    assert "von_mises" not in cbar
+    # A real bending stress on a loaded cantilever, not a margin-of-safety
+    # sentinel value (which would be ~1e10).
+    assert 0 < cbar["max_stress"] < 1_000_000

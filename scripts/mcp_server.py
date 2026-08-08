@@ -276,18 +276,75 @@ def run_solver(
 # get_max_stress
 # ---------------------------------------------------------------------------
 
+def _element_ids_for(arr: Any) -> Any:
+    """Bar-type results carry one row per element (`.element`); plate-type
+    results carry two rows per element -- one per shell fiber location --
+    indexed via `.element_node[:, 0]`."""
+    if hasattr(arr, "element_node"):
+        return arr.element_node[:, 0]
+    return arr.element
+
+
+def _peak_for_result(arr: Any) -> dict[str, Any]:
+    """Return the governing {"<quantity>": value, "element_id": ..., "subcase"
+    omitted here} for a single subcase's stress array.
+
+    Plate-type results (CQUAD4, CTRIA3, ...) report a `von_mises` column --
+    use it directly, taking a single max over the whole (times x entries)
+    array; each element's two fiber-location rows are handled for free since
+    we want the worst fiber anyway.
+
+    Bar-type results (CBAR, ...) report direct stresses (axial + bending,
+    e.g. s1a/s2a/s3a/s4a/axial/smaxa/smina/s1b/.../smaxb/sminb) rather than a
+    von Mises equivalent -- NOT the same physical quantity as plate von
+    Mises, so it's reported as "max_stress" instead of "von_mises" to avoid
+    implying a false equivalence. Margin-of-safety columns (header starting
+    with "MS", e.g. MS_tension/MS_compression) are excluded: pyNastran fills
+    them with large sentinel values (~1e10) when a margin isn't computed,
+    which would otherwise dominate a naive max/abs over all columns.
+    """
+    import numpy as np
+
+    headers = arr.get_headers()
+    elem_ids = _element_ids_for(arr)
+
+    if "von_mises" in headers:
+        quantity = "von_mises"
+        values = arr.data[:, :, headers.index("von_mises")]
+    else:
+        quantity = "max_stress"
+        stress_cols = [i for i, h in enumerate(headers) if not h.startswith("MS")]
+        values = np.max(np.abs(arr.data[:, :, stress_cols]), axis=2)
+
+    itime, ientry = np.unravel_index(np.argmax(values), values.shape)
+    return {
+        quantity: float(values[itime, ientry]),
+        "element_id": int(elem_ids[ientry]),
+    }
+
+
 @mcp.tool()
 def get_max_stress(op2_path: str) -> dict[str, Any]:
-    """Parse an OP2 and return the maximum von Mises CQUAD4 stress across all
-    subcases: {"von_mises": ..., "element_id": ..., "subcase": ...}.
+    """Parse an OP2 and return the peak stress for each element type present,
+    across all subcases:
 
-    Per pyNastran's API (see CLAUDE.md Gotchas): reads
-    op2.op2_results.stress.cquad4_stress[subcase], where von_mises is column
-    index 7 and each element appears twice (element_node[:, 0] repeats one
-    entry per shell fiber location). Taking a single max over the whole
-    (times x entries) array and mapping the winning entry back to its
-    element ID via element_node handles that double-entry naturally -- no
-    separate dedup step is needed since we want the worst fiber anyway.
+        {"cquad4": {"von_mises": ..., "element_id": ..., "subcase": ...},
+         "cbar": {"max_stress": ..., "element_id": ..., "subcase": ...},
+         ...}
+
+    Element types not present in the OP2 are omitted. Plate-type elements
+    (CQUAD4, CTRIA3, ...) report "von_mises"; bar-type elements (CBAR, ...)
+    report "max_stress" (peak direct axial+bending stress magnitude) -- these
+    are deliberately NOT combined into one blended "the max" number since
+    they're different physical quantities, and silently comparing them could
+    hide whichever one actually governs. See _peak_for_result's docstring for
+    the per-type column handling (including the CBAR margin-of-safety
+    sentinel-value gotcha).
+
+    Iterates over whatever `*_stress` result containers are actually present
+    on `op2.op2_results.stress` rather than hardcoding to specific element
+    types, so e.g. a model with CROD or CBEAM results is handled too as long
+    as it exposes a `get_headers()`/`.data` array in the same shape.
     """
     import numpy as np
     from pyNastran.op2.op2 import OP2
@@ -300,26 +357,31 @@ def get_max_stress(op2_path: str) -> dict[str, Any]:
 
     op2 = OP2(debug=False)
     op2.read_op2(str(path))
-    stress = op2.op2_results.stress.cquad4_stress
+    stress_results = op2.op2_results.stress
 
-    if not stress:
-        raise ValueError(f"No CQUAD4 stress results found in {path}")
+    peaks: dict[str, Any] = {}
+    for attr_name in dir(stress_results):
+        if not attr_name.endswith("_stress") or attr_name.startswith("_"):
+            continue
+        subcases = getattr(stress_results, attr_name)
+        if not subcases:
+            continue
+        element_type = attr_name[: -len("_stress")]
 
-    best: dict[str, Any] | None = None
-    for subcase, arr in stress.items():
-        von_mises = arr.data[:, :, 7]  # (ntimes, nentries)
-        elem_ids = arr.element_node[:, 0]
-        itime, ientry = np.unravel_index(np.argmax(von_mises), von_mises.shape)
-        value = float(von_mises[itime, ientry])
-        if best is None or value > best["von_mises"]:
-            best = {
-                "von_mises": value,
-                "element_id": int(elem_ids[ientry]),
-                "subcase": int(subcase) if isinstance(subcase, (int, np.integer)) else subcase,
-            }
+        best: dict[str, Any] | None = None
+        for subcase, arr in subcases.items():
+            peak = _peak_for_result(arr)
+            peak["subcase"] = int(subcase) if isinstance(subcase, (int, np.integer)) else subcase
+            quantity_key = "von_mises" if "von_mises" in peak else "max_stress"
+            if best is None or peak[quantity_key] > best[quantity_key]:
+                best = peak
+        if best is not None:
+            peaks[element_type] = best
 
-    assert best is not None
-    return best
+    if not peaks:
+        raise ValueError(f"No stress results found in {path}")
+
+    return peaks
 
 
 if __name__ == "__main__":

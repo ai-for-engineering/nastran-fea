@@ -56,8 +56,13 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   a no-op copy to `output_path`.
 - `run_solver(bdf_path, solver_exe_path=None, timeout=None)` -- thin wrapper
   around `run_solver()` below; same success/errors/paths result, as JSON.
-- `get_max_stress(op2_path)` -- parses an OP2 and returns the max von Mises
-  CQUAD4 stress (value, element ID, subcase) across all subcases.
+- `get_max_stress(op2_path)` -- parses an OP2 and returns the peak stress
+  per element type present (plate elements like CQUAD4/CTRIA3 report
+  `von_mises`; bar elements like CBAR report `max_stress`, since bar direct
+  stress isn't the same physical quantity as plate von Mises and the two
+  are deliberately not blended into one number), each with element ID and
+  governing subcase, e.g.
+  `{"cquad4": {"von_mises": ..., "element_id": ..., "subcase": ...}, "cbar": {"max_stress": ..., ...}}`.
 
 ## 3D visualization (pyNastranGUI)
 
