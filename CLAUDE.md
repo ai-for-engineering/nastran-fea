@@ -11,12 +11,6 @@ scope is narrower: AI-driven FEA in native Nastran bulk-data format only.
 Don't conflate the two in docs/naming -- "AI4Engineering" is the umbrella,
 not this project's name.
 
-Note: the technical slug is `ai-for-engineering` everywhere (GitHub org,
-local parent folder) -- the `ai4engineering` handle was already taken by
-someone else on GitHub. "AI4Engineering" remains the actual brand/company
-name used in prose/docs/content; it's just not used as an identifier
-anywhere technical anymore.
-
 ## Project constraint: open source only
 
 This project exists to demonstrate AI-driven FEA workflows using **only
