@@ -20,8 +20,13 @@ models/lug_mesh_preview.png
 results/*.png
 
 # Case study reference data (downloaded from public sources -- see README
-# for URLs/licenses; too large to commit, ~320MB combined)
-case_studies/
+# for URLs/licenses; too large to commit, ~320MB combined). Provenance
+# README files are tracked as an exception -- data survives a re-download,
+# provenance shouldn't have to.
+case_studies/*
+!case_studies/nasa_crm_wingbox/
+case_studies/nasa_crm_wingbox/*
+!case_studies/nasa_crm_wingbox/README.md
 
 # Generated test fixtures (regenerate via test_fixtures/*.py)
 test_fixtures/*.step
