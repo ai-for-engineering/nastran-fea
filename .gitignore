@@ -29,3 +29,6 @@ test_fixtures/*.stp
 
 # Debug/log output
 *.log
+
+# Scheduled-routine status summaries (local convenience only)
+.cron_status/
