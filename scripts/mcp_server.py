@@ -436,6 +436,24 @@ def _eids_for_property_ids(bdf_path: Path, property_ids: list[int]) -> set[int]:
     return {eid for eid, elem in model.elements.items() if elem.pid in pid_set}
 
 
+def _eids_for_isolate(
+    bdf_path: Path,
+    isolate_groups: list[str] | None,
+    isolate_property_ids: list[int] | None,
+    ses_path: str | None,
+) -> set[int]:
+    """The set of element IDs isolate_groups/isolate_property_ids names (the
+    elements to KEEP) -- split out of _resolve_hidden_eids so the camera
+    code can also ask "what's actually being isolated?" without redoing the
+    hide-vs-isolate resolution."""
+    keep: set[int] = set()
+    if isolate_groups:
+        keep.update(_eids_for_groups(isolate_groups, ses_path))
+    if isolate_property_ids:
+        keep.update(_eids_for_property_ids(bdf_path, isolate_property_ids))
+    return keep
+
+
 def _resolve_hidden_eids(
     bdf_path: Path,
     hide_groups: list[str] | None,
@@ -467,11 +485,7 @@ def _resolve_hidden_eids(
         )
 
     if isolate_requested:
-        keep: set[int] = set()
-        if isolate_groups:
-            keep.update(_eids_for_groups(isolate_groups, ses_path))
-        if isolate_property_ids:
-            keep.update(_eids_for_property_ids(bdf_path, isolate_property_ids))
+        keep = _eids_for_isolate(bdf_path, isolate_groups, isolate_property_ids, ses_path)
 
         from pyNastran.bdf.bdf import BDF
 
@@ -504,6 +518,37 @@ def _write_filtered_bdf(bdf_path: Path, hidden_eids: set[int], output_path: Path
     for eid in hidden_eids:
         model.elements.pop(eid, None)
     model.write_bdf(str(output_path), size=8, enddata=True)
+
+
+def _up_vector_for_horizontal_long_axis(view_direction, points) -> "np.ndarray":
+    """Given a view direction and a (n, 3) array of world-space points,
+    return a view_up vector such that the points' long axis (found via PCA,
+    projected into the plane perpendicular to view_direction) lands
+    horizontal in the rendered frame rather than at some arbitrary angle.
+
+    A landscape screenshot fills far more of the frame this way (confirmed
+    during development: an arbitrary fixed up-vector left a tapered,
+    diagonally-oriented wing using ~30% of frame width despite using ~80% of
+    frame height, since ResetCamera fits the axis-aligned bounding box, not
+    the actual silhouette) -- shared by both the governing-stress-element
+    camera and the isolated-group camera below.
+    """
+    import numpy as np
+
+    arbitrary = (
+        np.array([0.0, 0.0, 1.0]) if abs(view_direction[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    )
+    e1 = np.cross(view_direction, arbitrary)
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(view_direction, e1)
+
+    centered = points - points.mean(axis=0)
+    u = centered @ e1
+    v = centered @ e2
+    cov = np.cov(np.stack([u, v]))
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    short_axis_2d = eigvecs[:, np.argsort(eigvals)[0]]
+    return short_axis_2d[0] * e1 + short_axis_2d[1] * e2
 
 
 def _camera_look_direction_for_governing_element(
@@ -567,29 +612,91 @@ def _camera_look_direction_for_governing_element(
 
     diag = float(np.linalg.norm(bbox_max - bbox_min))
     camera_position = bbox_center + normal * diag * 2.0
+    up = _up_vector_for_horizontal_long_axis(normal, all_coords)
 
-    # A landscape screenshot fills far more of the frame if the model's own
-    # long axis runs horizontal rather than diagonally through the frame
-    # (confirmed during development: an arbitrary fixed up-vector left a
-    # tapered, diagonally-oriented wing using ~30% of frame width despite
-    # using ~80% of frame height, since ResetCamera fits the axis-aligned
-    # bounding box, not the actual silhouette). Finding that long axis via
-    # PCA on the node cloud, projected into the view plane (perpendicular to
-    # the face normal), and setting view_up to the SHORT in-plane axis makes
-    # the long axis land horizontal instead, however the model happens to be
-    # oriented in world coordinates.
-    arbitrary = np.array([0.0, 0.0, 1.0]) if abs(normal[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-    e1 = np.cross(normal, arbitrary)
-    e1 /= np.linalg.norm(e1)
-    e2 = np.cross(normal, e1)
+    return (
+        (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
+        (float(camera_position[0]), float(camera_position[1]), float(camera_position[2])),
+        (float(up[0]), float(up[1]), float(up[2])),
+    )
 
-    centered = all_coords - all_coords.mean(axis=0)
-    u = centered @ e1
-    v = centered @ e2
-    cov = np.cov(np.stack([u, v]))
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    short_axis_2d = eigvecs[:, np.argsort(eigvals)[0]]
-    up = short_axis_2d[0] * e1 + short_axis_2d[1] * e2
+
+def _camera_look_direction_for_isolated_group(
+    bdf_path: Path, eids: set[int], tilt_deg: float = 65.0
+) -> tuple[
+    tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+] | None:
+    """Compute (focal_point, camera_position, view_up) for isolate_groups/
+    isolate_property_ids views, tuned for the common case of a group of
+    roughly-parallel planar elements (ribs, spars, frames, ...).
+
+    A view straight down the group's shared face normal perfectly overlaps
+    every parallel element into one; a view perpendicular to it (what a
+    fixed "iso"/"top"/"side" preset often ends up giving, since they're
+    picked for the whole original model, not this subset -- see
+    render_model_view's docstring) collapses them edge-on into an
+    unreadable sliver, confirmed against a real render of an isolated ribs
+    group. Splitting the difference -- tilted tilt_deg off the shared
+    normal, mostly looking along it but angled enough to see each element's
+    extent -- is the standard oblique "stacked bulkheads" engineering view:
+    the parallel elements fan out and are individually distinguishable.
+
+    The shared normal is the average of each element's own local outward
+    normal (hemisphere-aligned first, since node winding can flip sign
+    element to element -- naively averaging raw normals could otherwise
+    cancel toward zero). Returns None if eids has no plate elements to
+    compute a normal from (e.g. an isolated group of only CBARs).
+    """
+    import numpy as np
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF(debug=False)
+    model.read_bdf(str(bdf_path), xref=False)
+
+    normals = []
+    group_coords = []
+    for eid in eids:
+        elem = model.elements.get(eid)
+        if elem is None or elem.type not in ("CQUAD4", "CTRIA3"):
+            continue
+        coords = np.array([model.nodes[nid].get_position() for nid in elem.nodes])
+        group_coords.append(coords)
+        if len(coords) >= 4:
+            normal = np.cross(coords[2] - coords[0], coords[3] - coords[1])
+        else:
+            normal = np.cross(coords[1] - coords[0], coords[2] - coords[0])
+        length = np.linalg.norm(normal)
+        if length > 0:
+            normals.append(normal / length)
+
+    if not normals:
+        return None
+
+    normals = np.array(normals)
+    reference = normals[0]
+    flipped = np.where((normals @ reference < 0)[:, None], -normals, normals)
+    mean_normal = flipped.mean(axis=0)
+    mean_normal /= np.linalg.norm(mean_normal)
+
+    group_points = np.concatenate(group_coords, axis=0)
+    bbox_min, bbox_max = group_points.min(axis=0), group_points.max(axis=0)
+    bbox_center = (bbox_min + bbox_max) / 2.0
+    diag = float(np.linalg.norm(bbox_max - bbox_min))
+
+    # Tilt the view off the shared normal, toward whichever world axis is
+    # least parallel to it, so the tilt actually shows up in the image
+    # rather than being swallowed by an unlucky choice of tangent.
+    world_axes = np.eye(3)
+    tangent_candidate = world_axes[np.argmin(np.abs(world_axes @ mean_normal))]
+    tangent = tangent_candidate - np.dot(tangent_candidate, mean_normal) * mean_normal
+    tangent /= np.linalg.norm(tangent)
+
+    theta = np.radians(tilt_deg)
+    view_from_direction = np.cos(theta) * mean_normal + np.sin(theta) * tangent
+    view_from_direction /= np.linalg.norm(view_from_direction)
+
+    camera_position = bbox_center + view_from_direction * diag * 2.0
+    up = _up_vector_for_horizontal_long_axis(view_from_direction, group_points)
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
@@ -783,37 +890,54 @@ def _render(
             f"Unknown camera preset {camera!r}; choose from "
             f"{sorted(_CAMERA_PRESETS) + ['auto']}"
         )
-    if camera == "auto" and resolved_op2_path is None:
+    is_isolating = bool(isolate_groups or isolate_property_ids)
+    if camera == "auto" and resolved_op2_path is None and not is_isolating:
         raise ValueError(
-            "camera='auto' aims at the governing stress element, so it "
-            "requires op2_path (use render_stress_contour, or pick a fixed "
-            "preset for render_model_view)"
+            "camera='auto' needs something to aim at: either op2_path (aims "
+            "at the governing stress element -- use render_stress_contour) "
+            "or isolate_groups/isolate_property_ids (aims for a readable "
+            "view of the isolated elements' shared face normal). With "
+            "neither, pick a fixed preset instead."
         )
 
     out_png = Path(output_png).resolve()
     out_png.parent.mkdir(parents=True, exist_ok=True)
     render_timeout = timeout if timeout is not None else _DEFAULT_RENDER_TIMEOUT_S
-    is_isolating = bool(isolate_groups or isolate_property_ids)
 
     custom_camera = None
     if camera == "auto":
-        custom_camera = _camera_look_direction_for_governing_element(in_path, resolved_op2_path)
+        if resolved_op2_path is not None:
+            custom_camera = _camera_look_direction_for_governing_element(
+                in_path, resolved_op2_path
+            )
+        if custom_camera is None and is_isolating:
+            isolated_eids = _eids_for_isolate(
+                in_path, isolate_groups, isolate_property_ids, ses_path
+            )
+            custom_camera = _camera_look_direction_for_isolated_group(in_path, isolated_eids)
         if custom_camera is None:
-            # Bar-only model (e.g. CBAR governs) -- no plate face normal to
-            # aim at, so fall back to the generic iso preset rather than
-            # erroring on an otherwise-valid render request.
+            # Bar-only model/group (e.g. CBAR governs, or an isolated group
+            # of only CBARs) -- no plate face normal to aim at, so fall back
+            # to the generic iso preset rather than erroring on an
+            # otherwise-valid render request.
             camera = "iso"
 
-    # Isolating typically leaves a small subset of a much larger scene, and
-    # aiming straight down one element's face normal is a tight, deliberate
-    # framing -- both fit tighter by default than a generic preset so they
-    # actually fill the frame (see render_model_view's docstring). Plain
-    # hide/no-filter calls with a fixed preset keep the un-zoomed default
-    # since the remaining geometry is usually still most of the original
-    # scene.
-    resolved_zoom = zoom if zoom is not None else (
-        1.5 if is_isolating else (2.1 if custom_camera is not None else 1.0)
-    )
+    # A custom_camera (either "auto" mode) is a tight, deliberate framing --
+    # it fits tighter by default than a generic preset so it actually fills
+    # the frame (see render_model_view's docstring). Isolating without a
+    # custom_camera (fixed preset applied to a filtered-down scene) still
+    # benefits from a tighter default than the un-zoomed 1.0 used for a
+    # plain full-model preset view, just not as tight as the tuned "auto"
+    # views. All three values verified by eye during development against
+    # the real wingbox case study.
+    if zoom is not None:
+        resolved_zoom = zoom
+    elif custom_camera is not None:
+        resolved_zoom = 2.1 if resolved_op2_path is not None else 2.2
+    elif is_isolating:
+        resolved_zoom = 1.5
+    else:
+        resolved_zoom = 1.0
 
     hidden_eids = _resolve_hidden_eids(
         in_path, hide_groups, hide_property_ids, isolate_groups, isolate_property_ids, ses_path
@@ -910,13 +1034,19 @@ def render_model_view(
     one of these. *_property_ids filter by raw PSHELL/PBAR property ID
     instead (or in addition) -- the fallback when no .ses file exists.
 
-    camera: one of "iso", "top", "side" (see _CAMERA_PRESETS) -- a generic
-    preset chosen for the whole original model may not suit an isolated
-    subset's actual shape well (e.g. isolating thin, mostly-planar groups
-    like ribs can render them near edge-on from "iso"); there's no
-    automatic best-angle selection here (that needs a stress result to aim
-    at -- see render_stress_contour's "auto" option), just the same three
-    presets applied to whatever's left after filtering.
+    camera: default "iso" (also "top"/"side", see _CAMERA_PRESETS) applies a
+    generic preset chosen for the whole original model, which may not suit
+    an isolated subset's actual shape well -- e.g. isolating thin,
+    mostly-planar groups like ribs can render them near edge-on, collapsed
+    into an unreadable sliver (confirmed against a real render). Pass
+    camera="auto" together with isolate_groups/isolate_property_ids instead
+    to aim for the isolated elements' shared face normal, tilted ~65 degrees
+    off it, fanning out parallel elements so each is distinguishable rather
+    than overlapping (see _camera_look_direction_for_isolated_group).
+    "auto" isn't the default here because it has nothing to aim at without
+    either op2_path (this tool doesn't take one -- see
+    render_stress_contour, where "auto" *is* the default) or isolate_*; it
+    raises in that case rather than guessing.
     zoom: >1 zooms in after the camera preset is applied (plain camera
     reset alone leaves significant empty margin around the model). Default
     is 1.0 (no zoom) normally, but 1.5 automatically when isolate_* is used

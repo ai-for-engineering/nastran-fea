@@ -143,12 +143,14 @@ stringers. A small parser (`ses_groups.py`) reads those group definitions,
 and the render tools can hide or isolate a group by name, auto-framing the
 camera on whatever's left:
 
-<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_ribs_isolated.png" alt="Ribs isolated from the rest of the wingbox assembly" style="max-width:100%;">
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_ribs_isolated.png" alt="Ribs isolated from the rest of the wingbox assembly, fanned out for readability" style="max-width:100%;">
 
 *All 6,220 rib elements, isolated from the other ~29,000 elements in the
-assembly, camera auto-framed on the isolated subset. (Color here is by node
-ID — an artifact of the default view when there's no stress result loaded,
-not a result itself.)*
+assembly. A straight-on view here would perfectly overlap every parallel
+rib into one; `camera="auto"` instead aims for their shared face normal,
+tilted enough to fan them out so each one is individually distinguishable.
+(Color here is by node ID — an artifact of the default view when there's no
+stress result loaded, not a result itself.)*
 
 ## Honest caveats
 
