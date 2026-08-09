@@ -52,10 +52,12 @@ isotropic aluminum (MAT1/CQUAD4/CBAR). Public domain, and genuinely
 MYSTRAN-compatible bulk data: representative of a production model rather
 than a toy example.
 
-<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_overview_iso.png" alt="Isometric view of the full NASA CRM wingbox mesh, showing depth and taper" style="max-width:100%;">
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_overview_planform.png" alt="Elevated planform view of the full NASA CRM wingbox mesh, showing sweep, taper, and root cross-section" style="max-width:100%;">
 
-*Isometric view, rendered directly from the BDF via `render_model_view`.
-Multi-cell box structure at the root, tapering to a thin tip.*
+*Rendered directly from the BDF via `render_model_view`, camera="planform"
+-- an angle tuned to match NASA's own CRM wingbox FEM description figures:
+span laid out horizontally, elevated just enough to reveal the root's
+multi-cell box cross-section and leading edge as depth cues.*
 
 Two issues surfaced before the model would solve:
 
