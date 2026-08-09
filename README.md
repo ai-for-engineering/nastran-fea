@@ -99,6 +99,12 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   with `render_stress_contour` transparently trims the OP2 to match the
   isolated element set first -- pairing a filtered geometry with the full
   untrimmed OP2 is a real, confirmed hang in pyNastranGUI.
+  `render_stress_contour`'s `result` parameter picks what to color by:
+  `"von_mises"` (default) or `"displacement"` (nodal translational
+  displacement magnitude). `result="displacement"` doesn't support
+  `hide_*`/`isolate_*` (raises if combined) -- the OP2 trimming those need
+  only preserves stress tables, so a displacement fringe on a trimmed OP2
+  would silently find nothing to show.
 
 ## 3D visualization (pyNastranGUI)
 

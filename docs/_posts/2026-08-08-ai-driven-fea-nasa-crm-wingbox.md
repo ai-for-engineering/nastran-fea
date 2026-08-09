@@ -273,11 +273,6 @@ governing element in this one, could just as easily land on bending at
 end A or B instead, and the tool reports that distinction rather than
 hiding it behind one blended number.
 
-Tip displacement: **~159.7 in (4,056.4 mm)**, at node 9103 — a lot, but
-this is a semi-span research model under a design GVW load case, not a
-certified aircraft, so treat the absolute number as a sanity check on the
-pipeline rather than a design conclusion.
-
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stress_iso.png" alt="Von Mises stress contour on the NASA CRM wingbox, camera aimed at the governing stress element" style="max-width:100%;">
 
 *Von Mises stress contour, rendered directly from the solved model via
@@ -286,6 +281,29 @@ The camera here isn't a fixed preset: it looks up the governing (highest
 von Mises) element and points straight down its outward face normal, so
 that element is guaranteed to be visible and unobstructed rather than
 potentially hidden behind other geometry.*
+
+### Tip displacement
+
+Tip displacement: **~159.7 in (4,056 mm)**, at node 9103 — a lot, but this
+is a semi-span research model under a design GVW load case, not a
+certified aircraft, so treat the absolute number as a sanity check on the
+pipeline rather than a design conclusion.
+
+A bare number doesn't convey *how* the structure is deflecting, though --
+whether it's smooth bending, concentrated near the tip, or something odder.
+`render_stress_contour` isn't limited to von Mises stress; its `result`
+parameter also accepts `"displacement"`, coloring by nodal translational
+displacement magnitude instead:
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_displacement_iso.png" alt="Displacement magnitude contour on the NASA CRM wingbox, showing smooth bending from root to tip" style="max-width:100%;">
+
+*Displacement magnitude contour (`render_stress_contour(..., result="displacement")`)
+— smooth, monotonic bending from an essentially-fixed root (blue, ~0 in) to
+the same 159.7 in peak at node 9103 (orange) that the bare number above
+reports. No local kinks or discontinuities, which is itself a useful sanity
+check: a real modeling error (an unintended pin joint, a missing
+constraint) often shows up as a visible jump in a displacement contour
+before it ever shows up as a wrong number.*
 
 ## The demo: driving it conversationally
 
@@ -413,8 +431,49 @@ a von Mises value (see `get_max_stress`'s `max_stress` vs `von_mises`
 distinction), so this shows geometry only rather than pretending otherwise.
 This is the group that exposed the bar-stress hang above.*
 
+For this group specifically, the relevant 1D-element output is **axial**
+stress, not bending: `get_max_stress` reports the governing stiffener
+(element 1559935) at 32,980.1 psi, `component: "axial"`, and every
+bending-recovery-point column (`s1a`-`s4a`, `s1b`-`s4b`) is exactly zero
+for it in the solved F06 -- consistent with these stringers/caps behaving
+as pin-ended truss members under this load case. A true per-element color
+fringe for that value isn't rendered here, deliberately: pyNastranGUI's
+own bar-stress fringing is the same GUI-synthesized pseudo-vonMises path
+that caused the hang above, not a direct read of the axial-stress column,
+so extending the same fringe mechanism to bars would reintroduce that risk
+for comparatively little payoff over the number `get_max_stress` already
+reports precisely.
+
 Every one of these came from the exact same tool call, just swapping which
 group name goes into `isolate_groups`.
+
+### Peak stress by component
+
+Pulling all of those isolated-group numbers into one place -- each row is
+the same `get_max_stress` call, just against that group's trimmed OP2
+instead of the full model's:
+
+| Component | Elements | Governing type | Peak stress | Element |
+|---|---|---|---|---|
+| Skin, lower | 2,322 | CQUAD4 (von Mises) | 39,983.7 psi (275.7 MPa) | 2854 |
+| Skin, upper | 2,322 | CQUAD4 (von Mises) | 38,947.6 psi (268.5 MPa) | 1587 |
+| Skin, upper | 2,322 | CTRIA3 (von Mises) | 2,794.4 psi (19.3 MPa) | 29402 |
+| Skin, lower | 2,322 | CTRIA3 (von Mises) | 1,707.5 psi (11.8 MPa) | 29405 |
+| Spars (LE/TE) | 1,611 | CQUAD4 (von Mises) | 34,046.9 psi (234.7 MPa) | 16107 |
+| Stiffeners | 14,134 | CBAR (axial) | 32,980.1 psi (227.4 MPa) | 1559935 |
+| Shear webs | 8,880 | CQUAD4 (von Mises) | 30,575.1 psi (210.8 MPa) | 26459 |
+| Ribs | 6,220 | CQUAD4 (von Mises) | 17,884.0 psi (123.3 MPa) | 20740 |
+
+Two things worth noting that aren't obvious from the per-group renders
+alone: the model-wide peaks reported at the top of this post (39,983.7 psi
+CQUAD4, 32,980.1 psi CBAR, 2,794.4 psi CTRIA3) each live in a *different*
+component -- lower skin, stiffeners, and upper skin respectively -- not
+all in the same "worst" part of the structure. And the lower skin, despite
+carrying the single highest stress in the whole model, isn't uniformly the
+worst component: its own CTRIA3 peak (1,707.5 psi) is lower than the upper
+skin's (2,794.4 psi). A single "peak stress" number for the whole model
+tells you the worst point; it doesn't tell you which components are
+actually driving that, and this table is the difference.
 
 ## Honest caveats
 

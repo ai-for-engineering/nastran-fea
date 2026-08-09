@@ -546,6 +546,35 @@ def test_render_model_view_isolate_matching_zero_elements(
         )
 
 
+def test_render_stress_contour_invalid_result(two_property_bdf: Path, tmp_path: Path):
+    # camera="iso" (not "auto") so this fails on result validation before
+    # ever trying to actually parse the dummy OP2 as a real result file.
+    dummy_op2 = tmp_path / "dummy.OP2"
+    dummy_op2.write_bytes(b"")
+    with pytest.raises(ValueError, match="result"):
+        ms.render_stress_contour(
+            str(two_property_bdf), str(dummy_op2), str(tmp_path / "out.png"),
+            camera="iso", result="bogus",
+        )
+
+
+def test_render_stress_contour_displacement_with_isolate_not_supported(
+    two_property_bdf: Path, tmp_path: Path
+):
+    """result="displacement" combined with isolate_*/hide_* should raise
+    up front rather than silently rendering an empty fringe --
+    _write_filtered_op2 (needed to avoid the geometry/results-mismatch hang
+    when isolating) drops displacement results entirely, keeping only
+    stress tables."""
+    dummy_op2 = tmp_path / "dummy.OP2"
+    dummy_op2.write_bytes(b"")
+    with pytest.raises(ValueError, match="displacement"):
+        ms.render_stress_contour(
+            str(two_property_bdf), str(dummy_op2), str(tmp_path / "out.png"),
+            camera="iso", result="displacement", isolate_property_ids=[1],
+        )
+
+
 @pytest.mark.skipif(
     not Path(DEFAULT_SOLVER_PATH).is_file(),
     reason="MYSTRAN solver not available in this environment.",
@@ -777,6 +806,31 @@ def test_render_stress_contour_isolate_end_to_end(two_property_bdf: Path, tmp_pa
     )
     assert result["success"], result.get("errors")
     assert result["hidden_element_count"] == 1
+    assert result["fringe_set"] is True
+    assert output_png.is_file()
+    assert output_png.stat().st_size > 0
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_stress_contour_displacement_end_to_end(
+    two_property_bdf: Path, tmp_path: Path
+):
+    """result="displacement" colors by nodal displacement magnitude
+    (Displacement T_XYZ) instead of von Mises -- exercises _FRINGE_RESULT_
+    MATCH's "displacementt" search actually finding and applying that case
+    (and not the rotational "Displacement R_XYZ" one) via the real tool."""
+    solver_result = ms.run_solver(str(two_property_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    output_png = tmp_path / "displacement.png"
+    result = ms.render_stress_contour(
+        str(two_property_bdf), solver_result["op2_path"], str(output_png),
+        camera="iso", result="displacement",
+    )
+    assert result["success"], result.get("errors")
     assert result["fringe_set"] is True
     assert output_png.is_file()
     assert output_png.stat().st_size > 0
