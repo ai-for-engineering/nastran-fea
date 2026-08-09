@@ -370,7 +370,8 @@ def test_camera_look_direction_aims_at_governing_element(two_property_bdf: Path)
         two_property_bdf, Path(solver_result["op2_path"])
     )
     assert result is not None
-    focal_point, camera_position, view_up = result
+    focal_point, camera_position, view_up, legend_y = result
+    assert legend_y in (0.56, 0.08)
 
     # two_property_bdf's elements are flat in the XY plane (all grids have
     # z=0), so their outward face normal is exactly +Z -- the camera should
@@ -410,7 +411,8 @@ def test_camera_look_direction_fans_out_isolated_group(two_property_bdf: Path):
 
     result = ms._camera_look_direction_for_isolated_group(two_property_bdf, eids)
     assert result is not None
-    focal_point, camera_position, view_up = result
+    focal_point, camera_position, view_up, legend_y = result
+    assert legend_y in (0.56, 0.08)
 
     # Both CQUAD4s are flat in the XY plane (z=0), so their shared normal is
     # +-Z. A straight-on view (camera offset from focal point only in Z)
@@ -427,6 +429,45 @@ def test_camera_look_direction_fans_out_isolated_group(two_property_bdf: Path):
     view_direction /= np.linalg.norm(view_direction)
     assert np.linalg.norm(view_up) == pytest.approx(1.0, abs=1e-6)
     assert np.dot(view_up, view_direction) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_legend_corner_y_avoids_content_in_top_right():
+    """Regression test for a real published clash: a wide fan whose content
+    actually reaches into the top-right corner should get bottom-right
+    instead, not the default. Pure numpy -- no BDF/GUI needed."""
+    import numpy as np
+
+    view_direction = np.array([0.0, 0.0, 1.0])
+    up = np.array([0.0, 1.0, 0.0])
+
+    # A cluster of points sitting squarely in the top-right candidate zone
+    # (norm_x > 0.66, norm_y > 0.08) alongside a spread-out background, so
+    # the top-right corner is genuinely occupied -- bottom-right should win.
+    rng = np.random.default_rng(0)
+    background = rng.uniform(-1.0, 1.0, size=(200, 3))
+    background[:, 2] = 0.0
+    top_right_cluster = np.column_stack([
+        rng.uniform(0.8, 1.0, size=50),
+        rng.uniform(0.5, 1.0, size=50),
+        np.zeros(50),
+    ])
+    points = np.concatenate([background, top_right_cluster], axis=0)
+
+    assert ms._legend_corner_y(view_direction, up, points) == 0.08
+
+
+def test_legend_corner_y_defaults_to_top_right_when_ambiguous():
+    """Symmetric content (nothing preferring one corner over the other)
+    should keep the default top-right placement."""
+    import numpy as np
+
+    view_direction = np.array([0.0, 0.0, 1.0])
+    up = np.array([0.0, 1.0, 0.0])
+    rng = np.random.default_rng(0)
+    points = rng.uniform(-1.0, 1.0, size=(200, 3))
+    points[:, 2] = 0.0
+
+    assert ms._legend_corner_y(view_direction, up, points) == 0.56
 
 
 def test_camera_look_direction_isolated_group_no_plate_elements(
