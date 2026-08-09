@@ -875,14 +875,25 @@ def _build_postscript(
     huge relative to the model in the final image -- confirmed by comparing
     screenshots with and without an explicit magnify during development.
 
-    The corner orientation-axes triad is always hidden and the scalar-bar
-    legend is always shrunk to a fixed, modest font size (rather than
-    pyNastranGUI's default, which auto-scales the legend text to fill its
-    bounding box -- on an 11-label bar that makes 5-digit stress values
-    render enormous, as confirmed against the first published renders). When
-    there's no meaningful result to show (want_stress_fringe=False, e.g. a
-    plain render_model_view call), the legend is hidden entirely instead of
-    left showing pyNastranGUI's default NodeID coloring.
+    The background is set to flat white (pyNastranGUI's own
+    set_background_color_to_white, normally used for GIF export) instead of
+    its default dark gradient -- reads better in a blog post. The corner
+    orientation-axes triad is always hidden and the scalar-bar legend is
+    always shrunk to a fixed, modest font size (rather than pyNastranGUI's
+    default, which auto-scales the legend text to fill its bounding box --
+    on an 11-label bar that makes 5-digit stress values render enormous, as
+    confirmed against the first published renders) with explicit black
+    title/label text (visible against the white background; pyNastranGUI's
+    default white text was tuned for its old dark background) and pinned to
+    the top-right corner, which every "auto" camera in this module
+    consistently leaves empty (content runs diagonally from the root/thick
+    end at upper-left to the tip/thin end at lower-right across every group
+    tested against the real wingbox case study) -- the previous
+    bottom-right placement could clash with a fan's own tip reaching into
+    that corner. When there's no meaningful result to show
+    (want_stress_fringe=False, e.g. a plain render_model_view call), the
+    legend is hidden entirely instead of left showing pyNastranGUI's
+    default NodeID coloring.
 
     zoom (>1 zooms in) is applied after the camera is set via self.zoom() --
     a plain camera reset (or vtkRenderer.ResetCamera()) alone leaves
@@ -927,6 +938,16 @@ if 'Global XYZ' in self.geometry_actors:
     self.geometry_actors['Global XYZ'].VisibilityOff()
 """
 
+    # pyNastranGUI's default is a dark gradient background -- set_background_
+    # color_to_white is its own built-in helper (used for GIF export) that
+    # both disables the gradient and sets a flat white background, which
+    # reads much better in a blog post than the default. render=False since
+    # nothing's on screen to redraw yet (no interactive window in this
+    # scripted/non-interactive mode).
+    background_block = """\
+self.settings.set_background_color_to_white(render=False)
+"""
+
     if custom_camera is not None:
         (fx, fy, fz), (px, py, pz), (ux, uy, uz) = custom_camera
         camera_block = f"""\
@@ -948,24 +969,37 @@ self.rend.ResetCameraClippingRange()
 """
 
     if want_stress_fringe:
+        # Top-right corner: every isolate/governing-element "auto" camera
+        # framing in this module runs its content diagonally from upper-left
+        # (root/thick end) to lower-right (tip/thin end) -- confirmed across
+        # every group in the real wingbox case study -- so top-right is
+        # consistently the empty corner, unlike the previous bottom-right
+        # placement which the fan's own tip could reach into. Text color is
+        # explicit black (rather than pyNastranGUI's default white) since
+        # it's now sitting on the white background set above instead of the
+        # old dark one.
         legend_block = """\
 _sb = self.scalar_bar.scalar_bar
 _sb.SetUnconstrainedFontSize(True)
 _sb.SetWidth(0.12)
 _sb.SetHeight(0.38)
-_sb.SetPosition(0.85, 0.08)
+_sb.SetPosition(0.85, 0.56)
 _sb.GetTitleTextProperty().SetFontSize(16)
+_sb.GetTitleTextProperty().SetColor(0.0, 0.0, 0.0)
 _sb.GetLabelTextProperty().SetFontSize(13)
+_sb.GetLabelTextProperty().SetColor(0.0, 0.0, 0.0)
 """
     else:
         # No result to show a scale for -- hiding just the legend while
         # leaving pyNastranGUI's default NodeID rainbow coloring on the mesh
         # looks broken (color gradient with nothing to explain it), so
-        # switch the mapper to a solid neutral color instead.
+        # switch the mapper to a solid neutral color instead. Darker than
+        # the previous (0.7, 0.7, 0.75) -- that was tuned for contrast
+        # against the old dark background and washes out against white.
         legend_block = """\
 self.scalar_bar.set_visibility(False)
 self.grid_mapper.ScalarVisibilityOff()
-self.geometry_actors['main'].GetProperty().SetColor(0.7, 0.7, 0.75)
+self.geometry_actors['main'].GetProperty().SetColor(0.55, 0.55, 0.6)
 """
 
     fringe_block = ""
@@ -987,6 +1021,7 @@ with open({fringe_flag_repr}, "w") as _f:
 
     return f"""\
 {axes_block}
+{background_block}
 {camera_block}
 self.zoom({zoom})
 {fringe_block}
