@@ -100,8 +100,11 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   depth cues -- a better single "what does this model look like" overview
   than `"iso"`, which rotates a long swept wingbox into a tall portrait
   shape that wastes most of a landscape frame (see `_CAMERA_PRESETS`'
-  comment in `scripts/mcp_server.py`). `zoom` tightens the frame, auto-applied
-  by default since a plain reset leaves significant empty margin. Isolating
+  comment in `scripts/mcp_server.py`). Framing/zoom is fit automatically by
+  default -- the model's own projected bounding rectangle is sized to fill
+  the frame regardless of camera or isolate_* choice (see
+  `_build_postscript`'s `fit_block`); pass `zoom` to additionally scale that
+  automatic fit. Isolating
   with `render_stress_contour` transparently trims the OP2 to match the
   isolated element set first -- pairing a filtered geometry with the full
   untrimmed OP2 is a real, confirmed hang in pyNastranGUI.

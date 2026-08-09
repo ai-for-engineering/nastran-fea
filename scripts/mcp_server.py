@@ -682,10 +682,9 @@ def describe_loads_and_boundary_conditions(bdf_path: str) -> dict[str, Any]:
 # and comparing against NASA's figure -- 65-70 was the best match, 75+
 # reads too flat, 60 shows more front face than NASA's own renders do).
 # azimuth=10 (vs. 0) adds a touch of the trailing-edge sliver too, closer
-# to NASA's figure than a perfectly axis-aligned 0. No default zoom is
-# baked in here (see render_model_view's docstring on why) -- callers
-# wanting the full frame filled should pass zoom=~2.0 explicitly, verified
-# by eye against this model.
+# to NASA's figure than a perfectly axis-aligned 0. Framing/zoom is fit
+# automatically regardless of which preset is picked -- see
+# _build_postscript's fit_block.
 _CAMERA_PRESETS = {
     "iso": (45.0, 20.0),
     "top": (0.0, 89.0),
@@ -1162,41 +1161,6 @@ def _apply_root_left_roll(
     return up
 
 
-def _axis_role_caption(
-    span_axis: int, chord_axis: int, thickness_axis: int, note_root_left: bool = False
-) -> str:
-    """Human-readable orientation string for _build_postscript's caption
-    text -- see that function's docstring for why this is a text overlay
-    rather than a 3D axis triad. note_root_left is only set True by the
-    custom-camera paths that actually apply _apply_root_left_roll -- a
-    fixed preset (iso/top/side/front/planform) hasn't earned that claim for
-    an arbitrary case study model, so it only gets the axis-role mapping.
-    """
-    caption = (
-        f"Axes: span = {_AXIS_LETTERS[span_axis]}"
-        f"  |  chord = {_AXIS_LETTERS[chord_axis]}"
-        f"  |  up = {_AXIS_LETTERS[thickness_axis]}"
-    )
-    if note_root_left:
-        caption += "  (root at left)"
-    return caption
-
-
-def _natural_axis_caption_for_bdf(bdf_path: Path) -> str:
-    """orientation_caption for a fixed camera preset (no governing element
-    or isolated group to derive one from) -- same axis detection, no
-    root-left claim since a fixed preset's roll isn't computed per-model.
-    """
-    import numpy as np
-    from pyNastran.bdf.bdf import BDF
-
-    model = BDF(debug=False)
-    model.read_bdf(str(bdf_path), xref=False)
-    all_coords = np.array([grid.get_position() for grid in model.nodes.values()])
-    span_axis, chord_axis, thickness_axis = _natural_axes(all_coords)
-    return _axis_role_caption(span_axis, chord_axis, thickness_axis)
-
-
 def _camera_look_direction_for_governing_element(
     bdf_path: Path, op2_path: Path
 ) -> tuple[
@@ -1204,21 +1168,18 @@ def _camera_look_direction_for_governing_element(
     tuple[float, float, float],
     tuple[float, float, float],
     float,
-    str,
 ] | None:
-    """Compute (focal_point, camera_position, view_up, legend_y,
-    orientation_caption) so a camera looking through them guarantees the
-    outward face normal of whichever plate element (CQUAD4/CTRIA3) has the
-    governing (highest) von Mises stress in op2_path faces the camera, while
-    keeping the model in its natural orientation (span horizontal, root on
-    the left) -- see get_max_stress for why plate vs. bar stress isn't
-    blended into one number, and the "Natural-orientation camera philosophy"
-    comment above _natural_axes for the reasoning behind this replacing a
-    previous fixed 8-octant-isometric approach. legend_y (see
-    _legend_corner_y) is where _build_postscript should place the scalar-bar
-    legend so it doesn't clash with the model; orientation_caption (see
-    _axis_role_caption) is the text _build_postscript overlays so a reader
-    can tell which world axis is span/chord/up without guessing.
+    """Compute (focal_point, camera_position, view_up, legend_y) so a camera
+    looking through them guarantees the outward face normal of whichever
+    plate element (CQUAD4/CTRIA3) has the governing (highest) von Mises
+    stress in op2_path faces the camera, while keeping the model in its
+    natural orientation (span horizontal, root on the left) -- see
+    get_max_stress for why plate vs. bar stress isn't blended into one
+    number, and the "Natural-orientation camera philosophy" comment above
+    _natural_axes for the reasoning behind this replacing a previous fixed
+    8-octant-isometric approach. legend_y (see _legend_corner_y) is where
+    _build_postscript should place the scalar-bar legend so it doesn't
+    clash with the model.
 
     The view direction is built from exactly two of the model's three
     natural axes: whichever of {thickness, chord} the governing element's
@@ -1298,16 +1259,12 @@ def _camera_look_direction_for_governing_element(
     root_at_min = _root_at_min_span(all_coords, span_axis, chord_axis, thickness_axis)
     up = _apply_root_left_roll(view_from_direction, up, all_coords, span_axis, root_at_min)
     legend_y = _legend_corner_y(view_from_direction, up, all_coords)
-    orientation_caption = _axis_role_caption(
-        span_axis, chord_axis, thickness_axis, note_root_left=True
-    )
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
         (float(camera_position[0]), float(camera_position[1]), float(camera_position[2])),
         (float(up[0]), float(up[1]), float(up[2])),
         legend_y,
-        orientation_caption,
     )
 
 
@@ -1318,15 +1275,12 @@ def _camera_look_direction_for_isolated_group(
     tuple[float, float, float],
     tuple[float, float, float],
     float,
-    str,
 ] | None:
-    """Compute (focal_point, camera_position, view_up, legend_y,
-    orientation_caption) for isolate_groups/isolate_property_ids views,
-    tuned for the common case of a group of roughly-parallel planar elements
-    (ribs, spars, frames, ...). legend_y (see _legend_corner_y) is where
-    _build_postscript should place the scalar-bar legend so it doesn't
-    clash with the model; orientation_caption (see _axis_role_caption) is
-    the text _build_postscript overlays for axis orientation.
+    """Compute (focal_point, camera_position, view_up, legend_y) for
+    isolate_groups/isolate_property_ids views, tuned for the common case of
+    a group of roughly-parallel planar elements (ribs, spars, frames, ...).
+    legend_y (see _legend_corner_y) is where _build_postscript should place
+    the scalar-bar legend so it doesn't clash with the model.
 
     A view straight down the group's shared face normal perfectly overlaps
     every parallel element into one; a view perpendicular to it (what a
@@ -1418,9 +1372,6 @@ def _camera_look_direction_for_isolated_group(
     span_axis, chord_axis, thickness_axis = _natural_axes(all_coords)
     root_at_min = _root_at_min_span(all_coords, span_axis, chord_axis, thickness_axis)
     up = _apply_root_left_roll(view_from_direction, up, all_coords, span_axis, root_at_min)
-    orientation_caption = _axis_role_caption(
-        span_axis, chord_axis, thickness_axis, note_root_left=True
-    )
 
     legend_y = _legend_corner_y(view_from_direction, up, group_points)
 
@@ -1429,14 +1380,13 @@ def _camera_look_direction_for_isolated_group(
         (float(camera_position[0]), float(camera_position[1]), float(camera_position[2])),
         (float(up[0]), float(up[1]), float(up[2])),
         legend_y,
-        orientation_caption,
     )
 
 
 def _build_postscript(
     output_png: Path,
     camera: str,
-    zoom: float,
+    zoom_override: float | None,
     want_stress_fringe: bool,
     custom_camera: tuple[
         tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
@@ -1444,7 +1394,6 @@ def _build_postscript(
     | None = None,
     legend_y: float = 0.56,
     fringe_match: str = "vonmises",
-    orientation_caption: str | None = None,
 ) -> str:
     """Build a pyNastranGUI postscript (see spikes/pynastrangui_screenshot_
     postscript.py and issue #8) that sets a camera preset, optionally
@@ -1483,11 +1432,19 @@ def _build_postscript(
     legend is hidden entirely instead of left showing pyNastranGUI's
     default NodeID coloring.
 
-    zoom (>1 zooms in) is applied after the camera is set via self.zoom() --
-    a plain camera reset (or vtkRenderer.ResetCamera()) alone leaves
-    substantial empty margin around the model rather than filling the frame;
-    see render_model_view's docstring for when to increase this (isolate_*
-    callers get a non-1.0 default automatically).
+    Framing is fit automatically (see fit_block below) rather than via a
+    hand-picked zoom multiplier: a plain camera reset (vtkRenderer.
+    ResetCamera(), which fits a bounding SPHERE so it stays correct under
+    an arbitrary roll) leaves substantial, inconsistent empty margin --
+    confirmed by measuring actual rendered frames, from as little as ~5%
+    unused on a tight custom-camera shot to as much as ~75% wasted on a
+    fixed-preset full-model overview. fit_block re-fits explicitly to the
+    model's own projected bounding RECTANGLE in screen space instead, which
+    is tighter than a bounding sphere for anything that isn't already
+    roughly cube-shaped (a wingbox very much isn't). zoom_override, when
+    given, is applied multiplicatively on top via self.zoom() afterward --
+    the escape hatch for a caller who wants to override the computed fit
+    (render_model_view/render_stress_contour's own zoom parameter).
 
     custom_camera, when given, overrides the named azimuth/elevation preset
     entirely: (focal_point, position, view_up), all (x, y, z) world
@@ -1563,7 +1520,7 @@ def _build_postscript(
         axis_viewport = (0.83, 0.0, 0.99, 0.16)
     else:
         # Legend dropped to its bottom-right placement -> top-right is free
-        # instead (top-left is reserved for orientation_caption below).
+        # instead.
         axis_viewport = (0.83, 0.84, 0.99, 1.0)
 
     axes_block = f"""\
@@ -1672,38 +1629,6 @@ with open({fringe_flag_repr}, "w") as _f:
     _f.write("1" if _fringe_set else "0")
 """
 
-    # A plain text label, separate from the real 3D triad in axes_block
-    # above: the triad shows genuine X/Y/Z geometry but has no idea those
-    # letters mean "span"/"chord"/"up" for this particular wing, or which
-    # end is root -- that mapping is exactly what this caption spells out.
-    # Top-left, since every render style this module produces (fixed
-    # presets and both custom-camera modes) leaves it empty -- content runs
-    # diagonally from lower-left to upper-right, the corner Max/Min block
-    # already owns bottom-left, and the legend/triad own the right side.
-    # "Empty" is only true on average, though -- a real render against this
-    # case study's own root-at-left governing-element view showed the root
-    # end's own silhouette reaching all the way to the top edge, overlapping
-    # the caption text. Unlike the legend (which has a free opposite corner
-    # to fall back to via _legend_corner_y), the caption has nowhere else to
-    # go -- every other corner is already claimed. A translucent white
-    # background behind the text (vtkTextProperty's own background support)
-    # keeps it legible regardless of what geometry ends up behind it,
-    # without needing to predict/avoid the model's silhouette per camera.
-    caption_block = ""
-    if orientation_caption:
-        caption_block = f"""
-import vtk as _vtk_orient
-_orient_txt = _vtk_orient.vtkTextActor()
-_orient_txt.SetInput({orientation_caption!r})
-_orient_txt.GetTextProperty().SetFontSize(16)
-_orient_txt.GetTextProperty().SetColor(0.0, 0.0, 0.0)
-_orient_txt.GetTextProperty().SetBackgroundColor(1.0, 1.0, 1.0)
-_orient_txt.GetTextProperty().SetBackgroundOpacity(0.75)
-_orient_txt.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-_orient_txt.GetPositionCoordinate().SetValue(0.02, 0.94)
-self.rend.AddActor2D(_orient_txt)
-"""
-
     # Not self.on_take_screenshot -- see axes_block's comment: its
     # _screenshot_setup/_screenshot_teardown unconditionally hide the corner
     # axis triad for the duration of the capture, which would silently
@@ -1722,14 +1647,81 @@ _writer.SetFileName({output_png_repr})
 _writer.Write()
 """
 
+    # Analytical auto-fit, replacing what used to be a plain
+    # self.zoom(<hand-picked multiplier>) -- once the camera's direction/up
+    # is fully set (fixed preset or custom_camera), project the model's
+    # actual mesh points (not just its axis-aligned bounding-box corners --
+    # see below) onto the camera's own screen-space right/up axes and size
+    # a parallel-projection camera's ParallelScale to fit exactly around
+    # that projected rectangle. This is tighter than vtkRenderer.
+    # ResetCamera()'s own bounding-SPHERE fit for anything that isn't
+    # roughly cube-shaped (a wingbox very much isn't) -- measured on real
+    # renders, the old sphere-fit-plus-guessed-multiplier combination left
+    # anywhere from ~5% to ~75% of the frame empty depending on camera/
+    # isolate combination, since each combination needed its own hand-tuned
+    # multiplier and a fixed preset's full-model overview never got one at
+    # all (see _CAMERA_PRESETS' comment, previously advising callers to
+    # pass zoom=~2.0 by hand). fill_fraction leaves a small margin so
+    # nothing touches the frame edge exactly (confirmed a real render's own
+    # geometry can reach the edge at fill_fraction=1.0); usable_width_frac
+    # further reserves the legend's own column on the right when one will
+    # be drawn, so the model's rectangle isn't sized as if that column were
+    # available to it.
+    #
+    # Projecting the 8 corners of the WORLD-axis-aligned bounding box
+    # (rather than the actual mesh points) was tried first and confirmed
+    # wrong against a real render: a swept, tapered wingbox doesn't fill
+    # its own axis-aligned box anywhere near as tightly as a simple test
+    # cube does once the view is tilted off-axis (verified with an isolated
+    # VTK reproduction using a plain box, where the corner-projection
+    # approach WAS exact -- the formula itself was never the bug), so the
+    # "safe" corner-based rectangle came out roughly 2x too large in each
+    # direction and left the model looking barely zoomed in at all. Using
+    # self.grid's actual point coordinates instead measures the real
+    # silhouette's extent directly, at the cost of needing the grid loaded
+    # (always true by the time this runs).
+    fill_fraction = 0.90
+    usable_width_frac = 0.80 if want_stress_fringe else 0.97
+    fit_block = f"""
+import numpy as _np_fit
+from vtk.util.numpy_support import vtk_to_numpy as _fit_vtk_to_numpy
+_fit_cam = self.rend.GetActiveCamera()
+_fit_view_dir = _np_fit.array(_fit_cam.GetDirectionOfProjection())
+_fit_view_dir = _fit_view_dir / _np_fit.linalg.norm(_fit_view_dir)
+_fit_up_raw = _np_fit.array(_fit_cam.GetViewUp())
+_fit_up_raw = _fit_up_raw / _np_fit.linalg.norm(_fit_up_raw)
+# Azimuth()/Elevation() rotate the camera's POSITION around the focal
+# point but leave ViewUp untouched -- after an Elevation, the stored
+# ViewUp is no longer perpendicular to the (now-tilted) view direction,
+# even though VTK's own rendering always uses the orthogonalized version
+# internally. Projecting onto the raw, non-orthogonal ViewUp measures the
+# wrong plane entirely. Re-orthogonalize via Gram-Schmidt first so
+# _fit_right/_fit_up span the actual screen plane.
+_fit_right = _np_fit.cross(_fit_view_dir, _fit_up_raw)
+_fit_right = _fit_right / _np_fit.linalg.norm(_fit_right)
+_fit_up = _np_fit.cross(_fit_right, _fit_view_dir)
+_fit_up = _fit_up / _np_fit.linalg.norm(_fit_up)
+
+_fit_points = _fit_vtk_to_numpy(self.grid.GetPoints().GetData())
+_fit_extent_x = (_fit_points @ _fit_right).ptp()
+_fit_extent_y = (_fit_points @ _fit_up).ptp()
+
+_fit_effective_aspect = {_RENDER_ASPECT_RATIO!r} * {usable_width_frac!r}
+_fit_half_h_y = (_fit_extent_y / 2.0) / {fill_fraction!r}
+_fit_half_h_x = (_fit_extent_x / 2.0) / _fit_effective_aspect / {fill_fraction!r}
+_fit_cam.SetParallelScale(max(_fit_half_h_y, _fit_half_h_x, 1e-6))
+self.rend.ResetCameraClippingRange()
+"""
+    if zoom_override is not None:
+        fit_block += f"self.zoom({zoom_override!r})\n"
+
     return f"""\
 {axes_block}
 {background_block}
 {camera_block}
-self.zoom({zoom})
+{fit_block}
 {fringe_block}
 {legend_block}
-{caption_block}
 {screenshot_block}
 
 import sys
@@ -1805,14 +1797,6 @@ def _render(
 
     custom_camera = None
     legend_y = 0.56
-    # Computed once, unconditionally, from the full original model -- a
-    # fixed preset (iso/top/side/front/planform) gets the plain axis-role
-    # mapping; a custom-camera path below (governing element or isolated
-    # group) overwrites this with the richer version that also states the
-    # root-left claim it actually engineered. See _build_postscript's
-    # caption_block and the "Natural-orientation camera philosophy" comment
-    # above _natural_axes.
-    orientation_caption = _natural_axis_caption_for_bdf(in_path)
     if camera == "auto":
         camera_result = None
         if is_isolating:
@@ -1843,29 +1827,7 @@ def _render(
             camera = "iso"
         else:
             custom_camera, legend_y = camera_result[:3], camera_result[3]
-            orientation_caption = camera_result[4]
 
-    # A custom_camera (either "auto" mode) is a tight, deliberate framing --
-    # it fits tighter by default than a generic preset so it actually fills
-    # the frame (see render_model_view's docstring). Isolating without a
-    # custom_camera (fixed preset applied to a filtered-down scene) still
-    # benefits from a tighter default than the un-zoomed 1.0 used for a
-    # plain full-model preset view, just not as tight as the tuned "auto"
-    # views. An isolated stress contour is zoomed slightly less than an
-    # isolated plain geometry view (1.9 vs 2.2) purely to leave room for the
-    # legend, which the geometry-only view doesn't have. All values verified
-    # by eye during development against the real wingbox case study.
-    if zoom is not None:
-        resolved_zoom = zoom
-    elif custom_camera is not None:
-        if is_isolating:
-            resolved_zoom = 1.9 if resolved_op2_path is not None else 2.2
-        else:
-            resolved_zoom = 2.1
-    elif is_isolating:
-        resolved_zoom = 1.5
-    else:
-        resolved_zoom = 1.0
 
     hidden_eids = _resolve_hidden_eids(
         in_path, hide_groups, hide_property_ids, isolate_groups, isolate_property_ids, ses_path
@@ -1966,12 +1928,11 @@ def _render(
             _build_postscript(
                 out_png,
                 camera,
-                resolved_zoom,
+                zoom,
                 want_stress_fringe=want_stress_fringe,
                 custom_camera=custom_camera,
                 fringe_match=_FRINGE_RESULT_MATCH[result],
                 legend_y=legend_y,
-                orientation_caption=orientation_caption,
             )
         )
         fringe_flag_path = Path(str(out_png) + ".fringe_set")
@@ -2065,20 +2026,18 @@ def render_model_view(
     either op2_path (this tool doesn't take one -- see
     render_stress_contour, where "auto" *is* the default) or isolate_*; it
     raises in that case rather than guessing.
-    zoom: >1 zooms in after the camera is set (plain camera reset alone
-    leaves significant empty margin around the model). Default is 1.0 (no
-    zoom) normally; 1.5 with isolate_* and a fixed preset (an isolated
-    subset is typically small relative to the original scene, so the
-    tighter default actually fills the frame instead of leaving it mostly
-    empty); 2.2 with isolate_* and camera="auto" (its deliberate framing
-    fits tighter still). All verified by eye during development against the
-    real wingbox case study -- override explicitly if a default crops or
-    under-fills your case.
+    zoom: framing is fit automatically by default (None) -- the model's own
+    projected bounding rectangle is sized to fill the frame regardless of
+    camera choice or isolate_*, see _build_postscript's fit_block. Pass a
+    number to additionally zoom in (>1) or out (<1) multiplicatively on top
+    of that automatic fit, e.g. if the default still crops or under-fills
+    an unusual case.
 
-    The corner orientation-axes triad is always hidden, and since there's no
-    result to show, the legend is hidden too (rather than left showing
-    pyNastranGUI's default NodeID coloring, which isn't a result and was a
-    documented point of confusion in the first published renders).
+    The corner orientation-axes triad is always shown (a real, labeled
+    vtkAxesActor, not a text approximation of one); since there's no result
+    to show, the legend is hidden (rather than left showing pyNastranGUI's
+    default NodeID coloring, which isn't a result and was a documented
+    point of confusion in the first published renders).
 
     Raises for infrastructure problems (missing bdf_path, unknown camera
     preset, unknown group name, hide_*/isolate_* both given, pyNastranGUI
@@ -2193,9 +2152,10 @@ def render_stress_contour(
     meaningful von Mises value anyway, so skipping it costs nothing;
     fringe_set comes back False in that case rather than trying and hanging.
 
-    The corner orientation-axes triad is always hidden, and the legend is
-    shrunk to a small fixed font size rather than left at pyNastranGUI's
-    default, which auto-scales legend text to fill its bounding box (on an
+    The corner orientation-axes triad is always shown (positioned opposite
+    whichever corner the legend ends up in), and the legend is shrunk to a
+    small fixed font size rather than left at pyNastranGUI's default, which
+    auto-scales legend text to fill its bounding box (on an
     11-label bar, 5-digit stress values came out enormous -- confirmed
     against the first published renders).
 
