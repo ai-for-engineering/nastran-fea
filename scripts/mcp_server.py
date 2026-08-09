@@ -674,17 +674,76 @@ def _up_vector_for_best_frame_fit(
     return up
 
 
+def _legend_corner_y(view_direction, up, points) -> float:
+    """Given a finalized camera direction/up and the same points used to
+    frame it, return the scalar-bar's y position (in the 0.85-x, VTK-
+    bottom-up viewport coordinates _build_postscript's legend_block uses):
+    0.56 for top-right, 0.08 for bottom-right.
+
+    Top-right is usually empty (every isolate/governing-element "auto"
+    camera tends to run its content diagonally from the root/thick end at
+    upper-left to the tip/thin end at lower-right), but not always -- a
+    wide fan (e.g. the real wingbox's ShearWebs group) can spread far
+    enough to reach into it too, confirmed by an actual clash in a
+    published render. Rather than assume, project the same points used to
+    frame the camera onto the screen's own (right, up) axes -- right =
+    up x view_direction, the same relationship implied by
+    _up_vector_for_best_frame_fit's rotation -- normalize by the points'
+    own bounding box (a fair proxy for what fills the frame after
+    ResetCamera, since the aspect-fit up-vector already makes that bounding
+    box's aspect ratio closely match the frame's), and check which
+    candidate corner region actually has fewer points in it.
+
+    No extra render/screenshot needed -- this reuses geometry already in
+    hand. (An earlier version of this fix took a real probe screenshot
+    with the legend hidden and measured the image directly instead; that
+    approach turned out to hang pyNastranGUI when on_take_screenshot was
+    called a second time in the same process, confirmed by two end-to-end
+    tests timing out at their full 60s/300s limits -- this analytical
+    version avoids the second screenshot call entirely.)
+    """
+    import numpy as np
+
+    right = np.cross(up, view_direction)
+    screen_x = points @ right
+    screen_y = points @ up
+
+    x_center = (screen_x.max() + screen_x.min()) / 2.0
+    x_half = (screen_x.max() - screen_x.min()) / 2.0
+    y_center = (screen_y.max() + screen_y.min()) / 2.0
+    y_half = (screen_y.max() - screen_y.min()) / 2.0
+    if x_half == 0 or y_half == 0:
+        return 0.56
+
+    norm_x = (screen_x - x_center) / x_half
+    norm_y = (screen_y - y_center) / y_half
+
+    # Matches the legend's actual footprint (x in [0.85, 0.97], width 0.12)
+    # translated from 0-1 viewport coordinates into this -1..1 normalized
+    # space, with a little margin: viewport 0.83 -> norm 0.66.
+    in_right_column = norm_x > 0.66
+    top_right_count = np.count_nonzero(in_right_column & (norm_y > 0.08))
+    bottom_right_count = np.count_nonzero(in_right_column & (norm_y < -0.08))
+
+    return 0.56 if top_right_count <= bottom_right_count else 0.08
+
+
 def _camera_look_direction_for_governing_element(
     bdf_path: Path, op2_path: Path
 ) -> tuple[
-    tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+    float,
 ] | None:
-    """Compute (focal_point, camera_position, view_up) so a camera looking
-    through them views the model from whichever isometric octant best faces
-    the outward face normal of whichever plate element (CQUAD4/CTRIA3) has
-    the governing (highest) von Mises stress in op2_path -- see
-    get_max_stress for why plate vs. bar stress isn't blended into one
-    number.
+    """Compute (focal_point, camera_position, view_up, legend_y) so a camera
+    looking through them views the model from whichever isometric octant
+    best faces the outward face normal of whichever plate element
+    (CQUAD4/CTRIA3) has the governing (highest) von Mises stress in
+    op2_path -- see get_max_stress for why plate vs. bar stress isn't
+    blended into one number. legend_y (see _legend_corner_y) is where
+    _build_postscript should place the scalar-bar legend so it doesn't
+    clash with the model.
 
     An isometric direction (equal angle to all three world axes) is a
     standard engineering-drawing convention specifically because no single
@@ -751,22 +810,29 @@ def _camera_look_direction_for_governing_element(
     diag = float(np.linalg.norm(bbox_max - bbox_min))
     camera_position = bbox_center + view_from_direction * diag * 2.0
     up = _up_vector_for_best_frame_fit(view_from_direction, all_coords)
+    legend_y = _legend_corner_y(view_from_direction, up, all_coords)
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
         (float(camera_position[0]), float(camera_position[1]), float(camera_position[2])),
         (float(up[0]), float(up[1]), float(up[2])),
+        legend_y,
     )
 
 
 def _camera_look_direction_for_isolated_group(
     bdf_path: Path, eids: set[int], tilt_deg: float = 40.0
 ) -> tuple[
-    tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+    float,
 ] | None:
-    """Compute (focal_point, camera_position, view_up) for isolate_groups/
-    isolate_property_ids views, tuned for the common case of a group of
-    roughly-parallel planar elements (ribs, spars, frames, ...).
+    """Compute (focal_point, camera_position, view_up, legend_y) for
+    isolate_groups/isolate_property_ids views, tuned for the common case of
+    a group of roughly-parallel planar elements (ribs, spars, frames, ...).
+    legend_y (see _legend_corner_y) is where _build_postscript should place
+    the scalar-bar legend so it doesn't clash with the model.
 
     A view straight down the group's shared face normal perfectly overlaps
     every parallel element into one; a view perpendicular to it (what a
@@ -845,11 +911,13 @@ def _camera_look_direction_for_isolated_group(
 
     camera_position = bbox_center + view_from_direction * diag * 2.0
     up = _up_vector_for_best_frame_fit(view_from_direction, group_points)
+    legend_y = _legend_corner_y(view_from_direction, up, group_points)
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
         (float(camera_position[0]), float(camera_position[1]), float(camera_position[2])),
         (float(up[0]), float(up[1]), float(up[2])),
+        legend_y,
     )
 
 
@@ -862,6 +930,7 @@ def _build_postscript(
         tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
     ]
     | None = None,
+    legend_y: float = 0.56,
 ) -> str:
     """Build a pyNastranGUI postscript (see spikes/pynastrangui_screenshot_
     postscript.py and issue #8) that sets a camera preset, optionally
@@ -875,14 +944,25 @@ def _build_postscript(
     huge relative to the model in the final image -- confirmed by comparing
     screenshots with and without an explicit magnify during development.
 
-    The corner orientation-axes triad is always hidden and the scalar-bar
-    legend is always shrunk to a fixed, modest font size (rather than
-    pyNastranGUI's default, which auto-scales the legend text to fill its
-    bounding box -- on an 11-label bar that makes 5-digit stress values
-    render enormous, as confirmed against the first published renders). When
-    there's no meaningful result to show (want_stress_fringe=False, e.g. a
-    plain render_model_view call), the legend is hidden entirely instead of
-    left showing pyNastranGUI's default NodeID coloring.
+    The background is set to flat white (pyNastranGUI's own
+    set_background_color_to_white, normally used for GIF export) instead of
+    its default dark gradient -- reads better in a blog post. The corner
+    orientation-axes triad is always hidden and the scalar-bar legend is
+    always shrunk to a fixed, modest font size (rather than pyNastranGUI's
+    default, which auto-scales the legend text to fill its bounding box --
+    on an 11-label bar that makes 5-digit stress values render enormous, as
+    confirmed against the first published renders) with explicit black
+    title/label text (visible against the white background; pyNastranGUI's
+    default white text was tuned for its old dark background) and pinned to
+    the top-right corner, which every "auto" camera in this module
+    consistently leaves empty (content runs diagonally from the root/thick
+    end at upper-left to the tip/thin end at lower-right across every group
+    tested against the real wingbox case study) -- the previous
+    bottom-right placement could clash with a fan's own tip reaching into
+    that corner. When there's no meaningful result to show
+    (want_stress_fringe=False, e.g. a plain render_model_view call), the
+    legend is hidden entirely instead of left showing pyNastranGUI's
+    default NodeID coloring.
 
     zoom (>1 zooms in) is applied after the camera is set via self.zoom() --
     a plain camera reset (or vtkRenderer.ResetCamera()) alone leaves
@@ -927,6 +1007,16 @@ if 'Global XYZ' in self.geometry_actors:
     self.geometry_actors['Global XYZ'].VisibilityOff()
 """
 
+    # pyNastranGUI's default is a dark gradient background -- set_background_
+    # color_to_white is its own built-in helper (used for GIF export) that
+    # both disables the gradient and sets a flat white background, which
+    # reads much better in a blog post than the default. render=False since
+    # nothing's on screen to redraw yet (no interactive window in this
+    # scripted/non-interactive mode).
+    background_block = """\
+self.settings.set_background_color_to_white(render=False)
+"""
+
     if custom_camera is not None:
         (fx, fy, fz), (px, py, pz), (ux, uy, uz) = custom_camera
         camera_block = f"""\
@@ -948,24 +1038,36 @@ self.rend.ResetCameraClippingRange()
 """
 
     if want_stress_fringe:
-        legend_block = """\
+        # legend_y (0.56 for top-right, 0.08 for bottom-right) is decided by
+        # the caller -- see _legend_corner_y -- by analyzing where the
+        # model's own geometry actually falls in the projected frame, since
+        # top-right isn't always the empty corner (a wide fan, e.g. the real
+        # wingbox's ShearWebs group, can reach into it -- confirmed by an
+        # actual clash in a published render). Text color is explicit black
+        # (rather than pyNastranGUI's default white) since it's now sitting
+        # on the white background set above instead of the old dark one.
+        legend_block = f"""\
 _sb = self.scalar_bar.scalar_bar
 _sb.SetUnconstrainedFontSize(True)
 _sb.SetWidth(0.12)
 _sb.SetHeight(0.38)
-_sb.SetPosition(0.85, 0.08)
+_sb.SetPosition(0.85, {legend_y!r})
 _sb.GetTitleTextProperty().SetFontSize(16)
+_sb.GetTitleTextProperty().SetColor(0.0, 0.0, 0.0)
 _sb.GetLabelTextProperty().SetFontSize(13)
+_sb.GetLabelTextProperty().SetColor(0.0, 0.0, 0.0)
 """
     else:
         # No result to show a scale for -- hiding just the legend while
         # leaving pyNastranGUI's default NodeID rainbow coloring on the mesh
         # looks broken (color gradient with nothing to explain it), so
-        # switch the mapper to a solid neutral color instead.
+        # switch the mapper to a solid neutral color instead. Darker than
+        # the previous (0.7, 0.7, 0.75) -- that was tuned for contrast
+        # against the old dark background and washes out against white.
         legend_block = """\
 self.scalar_bar.set_visibility(False)
 self.grid_mapper.ScalarVisibilityOff()
-self.geometry_actors['main'].GetProperty().SetColor(0.7, 0.7, 0.75)
+self.geometry_actors['main'].GetProperty().SetColor(0.55, 0.55, 0.6)
 """
 
     fringe_block = ""
@@ -987,6 +1089,7 @@ with open({fringe_flag_repr}, "w") as _f:
 
     return f"""\
 {axes_block}
+{background_block}
 {camera_block}
 self.zoom({zoom})
 {fringe_block}
@@ -1060,7 +1163,9 @@ def _render(
     render_timeout = timeout if timeout is not None else _DEFAULT_RENDER_TIMEOUT_S
 
     custom_camera = None
+    legend_y = 0.56
     if camera == "auto":
+        camera_result = None
         if is_isolating:
             # Isolating removes everything else from the scene, so the
             # occlusion concern the governing-element camera solves doesn't
@@ -1076,17 +1181,19 @@ def _render(
             isolated_eids = _eids_for_isolate(
                 in_path, isolate_groups, isolate_property_ids, ses_path
             )
-            custom_camera = _camera_look_direction_for_isolated_group(in_path, isolated_eids)
-        if custom_camera is None and resolved_op2_path is not None:
-            custom_camera = _camera_look_direction_for_governing_element(
+            camera_result = _camera_look_direction_for_isolated_group(in_path, isolated_eids)
+        if camera_result is None and resolved_op2_path is not None:
+            camera_result = _camera_look_direction_for_governing_element(
                 in_path, resolved_op2_path
             )
-        if custom_camera is None:
+        if camera_result is None:
             # Bar-only model/group (e.g. CBAR governs, or an isolated group
             # of only CBARs) -- no plate face normal to aim at, so fall back
             # to the generic iso preset rather than erroring on an
             # otherwise-valid render request.
             camera = "iso"
+        else:
+            custom_camera, legend_y = camera_result[:3], camera_result[3]
 
     # A custom_camera (either "auto" mode) is a tight, deliberate framing --
     # it fits tighter by default than a generic preset so it actually fills
@@ -1170,6 +1277,7 @@ def _render(
                 resolved_zoom,
                 want_stress_fringe=want_stress_fringe,
                 custom_camera=custom_camera,
+                legend_y=legend_y,
             )
         )
         fringe_flag_path = Path(str(out_png) + ".fringe_set")
