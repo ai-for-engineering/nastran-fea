@@ -53,6 +53,15 @@ rationale here, just the reminder:
   README's NASA CRM case-study section.
 - pyNastranGUI's dependency versions (VTK pin, etc.) are documented in
   README's GUI section -- check there before reinstalling anything.
+- Never invoke `pyNastran.gui.gui` as a raw shell command bounded only by a
+  generic command-timeout -- that kind of timeout detaches/backgrounds the
+  wait, it doesn't kill the process, so a slow render leaks a live Qt
+  process indefinitely (discovered firsthand: a debug postscript run this
+  way outlived its 180s timeout and sat idle for hours before being
+  noticed). Always go through (or mirror) `scripts/mcp_server.py`'s
+  `_run_pynastrangui`, which wraps the call in Python's
+  `subprocess.run(..., timeout=...)` -- that genuinely kills the child on
+  timeout.
 
 Things with no README equivalent (code-level, not usage-level):
 
@@ -63,11 +72,38 @@ Things with no README equivalent (code-level, not usage-level):
   `op2.op2_results.stress.cquad4_stress[subcase]` (not the deprecated
   `op2.cquad4_stress`). `von_mises` is column index 7; `element_node[:, 0]`
   gives element IDs (each element appears twice, once per shell fiber).
+- pyNastran BDF combination cards live in their own dicts, separate from
+  the cards they combine: `SPCADD` is in `model.spcadds`, not `model.spcs`
+  (which only has `SPC`/`SPC1`); `LOAD` combinations are in
+  `model.load_combinations`, not `model.loads` (which only has
+  `FORCE`/`MOMENT`/...). Checking only the latter silently returns nothing
+  for a deck that uses combinations -- both dicts need checking, keyed the
+  same way (by set id).
+- To find pyNastranGUI's actual internal result-case names (for adding a
+  new `render_stress_contour` fringe type), run a one-off postscript that
+  loops `self.result_cases.items()` and writes out each `resname` --
+  known names so far: `'vonMises'`, `'Displacement T_XYZ'` (translational
+  magnitude), `'Displacement R_XYZ'` (rotational). See the Gotcha above on
+  never invoking pyNastranGUI directly via a raw, timeout-bounded shell
+  command -- run this the same safe way.
 
 ## Workflow conventions
 
 - **Branch + PR, not direct commits to `master`** for anything nontrivial.
   Backlog is tracked as GitHub issues; reference/close them from PRs.
+- **Session wrap-up, before switching away from a work session:**
+  1. Open work state (in-progress tasks, decisions made) belongs in GitHub
+     issues/PRs, not in this file or in Claude's own memory -- it decays
+     fast and GitHub is already the source of truth.
+  2. A genuinely durable, repo-level fact learned this session (a library
+     quirk, a solver limitation, a convention) -- update this file. Edit an
+     existing bullet if one's related; don't just append a near-duplicate.
+  3. A lesson about *how to collaborate* (a correction, a confirmed
+     approach) that would apply beyond this repo -- that's Claude's memory,
+     not this file.
+  4. Skim for staleness: a Gotchas bullet superseded by a later fix, a repo
+     layout entry for something deleted -- fix or remove it now rather than
+     letting this file grow monotonically.
 - Delegated/autonomous work uses the `Agent` tool with
   `isolation: "worktree"` -- it works in an isolated git worktree and
   branch, then opens its own PR. Worktrees don't have their own `venv/` or
