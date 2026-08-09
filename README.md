@@ -63,6 +63,18 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   are deliberately not blended into one number), each with element ID and
   governing subcase, e.g.
   `{"cquad4": {"von_mises": ..., "element_id": ..., "subcase": ...}, "cbar": {"max_stress": ..., ...}}`.
+- `describe_loads_and_boundary_conditions(bdf_path)` -- explains what's
+  actually constraining and loading the model, per subcase: reads SPC/SPC1
+  (following SPCADD combinations) for boundary conditions and
+  FORCE/MOMENT/FORCE1/FORCE2/MOMENT1/MOMENT2 (following LOAD combinations
+  and their scale factors) for loads, and reports constrained node/DOF
+  counts plus a resultant force/moment vector. A subcase that doesn't
+  request an SPC or LOAD at all (e.g. a modes-only subcase) reports `None`
+  for that half rather than an empty result, so "not requested" is
+  distinguishable from "requested but empty". Pressure/gravity loads
+  (PLOAD*/GRAV) are counted but not vector-summed -- they need element
+  geometry or a mass distribution this tool doesn't load. MPC is not yet
+  handled (not exercised by the NASA CRM wingbox validation case).
 - `render_model_view(bdf_path, output_png, ...)` /
   `render_stress_contour(bdf_path, op2_path, output_png, ...)` -- render a
   screenshot of the model (plain geometry, or colored by von Mises stress)
