@@ -607,7 +607,7 @@ def test_camera_look_direction_aims_at_governing_element(two_property_bdf: Path)
         two_property_bdf, Path(solver_result["op2_path"])
     )
     assert result is not None
-    focal_point, camera_position, view_up, legend_y, orientation_caption = result
+    focal_point, camera_position, view_up, legend_y = result
     assert legend_y in (0.56, 0.08)
 
     # two_property_bdf's nodes span X in [0, 2], Y in [0, 1], Z always 0 --
@@ -632,9 +632,6 @@ def test_camera_look_direction_aims_at_governing_element(two_property_bdf: Path)
 
     assert np.linalg.norm(view_up) == pytest.approx(1.0, abs=1e-6)
     assert np.dot(view_up, direction) == pytest.approx(0.0, abs=1e-6)
-    assert "span = X" in orientation_caption
-    assert "up = Z" in orientation_caption
-    assert "root at left" in orientation_caption
 
     from pyNastran.bdf.bdf import BDF
 
@@ -656,9 +653,8 @@ def test_camera_look_direction_fans_out_isolated_group(two_property_bdf: Path):
 
     result = ms._camera_look_direction_for_isolated_group(two_property_bdf, eids)
     assert result is not None
-    focal_point, camera_position, view_up, legend_y, orientation_caption = result
+    focal_point, camera_position, view_up, legend_y = result
     assert legend_y in (0.56, 0.08)
-    assert "root at left" in orientation_caption
 
     # Both CQUAD4s are flat in the XY plane (z=0), so their shared normal is
     # +-Z. A straight-on view (camera offset from focal point only in Z)
@@ -825,14 +821,6 @@ def test_apply_root_left_roll_leaves_up_unchanged_when_already_left():
         view_from_direction, up, points, span_axis=1, root_at_min=True
     )
     assert np.allclose(corrected_up, up)
-
-
-def test_axis_role_caption_includes_root_claim_only_when_asked():
-    caption = ms._axis_role_caption(1, 0, 2)
-    assert caption == "Axes: span = Y  |  chord = X  |  up = Z"
-
-    caption_with_root = ms._axis_role_caption(1, 0, 2, note_root_left=True)
-    assert caption_with_root == "Axes: span = Y  |  chord = X  |  up = Z  (root at left)"
 
 
 def test_camera_look_direction_isolated_group_no_plate_elements(
