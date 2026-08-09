@@ -678,6 +678,19 @@ _CAMERA_PRESETS = {
 
 _DEFAULT_RENDER_TIMEOUT_S = 300
 
+# render_stress_contour's `result` -> the case/whitespace/underscore-
+# insensitive substring _build_postscript's fringe search looks for in
+# self.result_cases (see pyNastranGUI's own case names, confirmed by
+# inspecting self.result_cases during development: 'vonMises',
+# 'Displacement T_XYZ', 'Displacement R_XYZ'). "displacementt" (not just
+# "displacement") deliberately excludes the rotational displacement case --
+# both names contain "displacement", only the translational one has a "T"
+# right after it once spaces/underscores are stripped.
+_FRINGE_RESULT_MATCH = {
+    "von_mises": "vonmises",
+    "displacement": "displacementt",
+}
+
 # pyNastranGUI's default main-window render size on this setup, confirmed
 # from actual screenshot dimensions (1606x768) -- used to pick a camera
 # roll (view_up) that matches the OUTPUT frame's aspect ratio rather than
@@ -1198,6 +1211,7 @@ def _build_postscript(
     ]
     | None = None,
     legend_y: float = 0.56,
+    fringe_match: str = "vonmises",
 ) -> str:
     """Build a pyNastranGUI postscript (see spikes/pynastrangui_screenshot_
     postscript.py and issue #8) that sets a camera preset, optionally
@@ -1247,9 +1261,12 @@ def _build_postscript(
     along that fixed direction.
 
     want_stress_fringe searches the loaded result cases for one whose name
-    matches "vonmises" case/whitespace/underscore-insensitively (pyNastran
-    labels it 'vonMises', confirmed by inspecting self.result_cases during
-    the spike) and reports whether it found one via a small sidecar file
+    matches fringe_match case/whitespace/underscore-insensitively (default
+    "vonmises" -- pyNastran labels it 'vonMises', confirmed by inspecting
+    self.result_cases during the spike; render_stress_contour's
+    result="displacement" passes "displacementt" instead, matching
+    'Displacement T_XYZ' but not the rotational 'Displacement R_XYZ') and
+    reports whether it found one via a small sidecar file
     (<output_png>.fringe_set, "1" or "0") next to the screenshot, since the
     postscript runs in a separate subprocess with no other way to report
     back to the caller. Falls back to whatever pyNastranGUI displays by
@@ -1346,7 +1363,7 @@ for _key, _val in self.result_cases.items():
         _obj, (_i, _resname) = _val
     except Exception:
         continue
-    if "vonmises" in _resname.lower().replace(" ", "").replace("_", ""):
+    if {fringe_match!r} in _resname.lower().replace(" ", "").replace("_", ""):
         self.on_fringe(_key)
         _fringe_set = True
         break
@@ -1399,6 +1416,7 @@ def _render(
     camera: str,
     zoom: float | None,
     timeout: float | None,
+    result: str = "von_mises",
 ) -> dict[str, Any]:
     in_path = Path(bdf_path).resolve()
     if not in_path.is_file():
@@ -1414,6 +1432,10 @@ def _render(
         raise ValueError(
             f"Unknown camera preset {camera!r}; choose from "
             f"{sorted(_CAMERA_PRESETS) + ['auto']}"
+        )
+    if result not in _FRINGE_RESULT_MATCH:
+        raise ValueError(
+            f"Unknown result {result!r}; choose from {sorted(_FRINGE_RESULT_MATCH)}"
         )
     is_isolating = bool(isolate_groups or isolate_property_ids)
     if camera == "auto" and resolved_op2_path is None and not is_isolating:
@@ -1487,6 +1509,22 @@ def _render(
     hidden_eids = _resolve_hidden_eids(
         in_path, hide_groups, hide_property_ids, isolate_groups, isolate_property_ids, ses_path
     )
+    if hidden_eids and result != "von_mises" and resolved_op2_path is not None:
+        # _write_filtered_op2 (below) drops displacement/velocity/etc.
+        # result categories entirely -- it only ever trims and keeps stress
+        # tables, since that's all a von Mises fringe needs. A displacement
+        # fringe combined with hide_*/isolate_* would silently find nothing
+        # to show (fringe_set=False) rather than erroring, which is worse
+        # than just saying so up front: this combination isn't supported
+        # yet, so ask for the untrimmed model instead of guessing.
+        raise ValueError(
+            f"result={result!r} with hide_groups/hide_property_ids/"
+            "isolate_groups/isolate_property_ids isn't supported yet -- "
+            "the OP2 trimming needed to avoid the geometry/results mismatch "
+            "hang (see _write_filtered_op2) only preserves stress tables, "
+            "so a displacement fringe would silently find nothing to show. "
+            "Render the full, untrimmed model for a displacement contour."
+        )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -1514,27 +1552,36 @@ def _render(
             render_op2_path = tmpdir_path / "filtered.OP2"
             _write_filtered_op2(resolved_op2_path, kept_eids, render_op2_path)
 
-        # Only actually attempt the vonMises fringe if a plate stress result
-        # (the only type get_max_stress calls "von_mises") is genuinely
-        # present in what's about to be loaded. This matters beyond just
-        # "don't bother" for a bar-only selection: pyNastranGUI internally
-        # synthesizes a bar-stress-derived pseudo-vonMises case even when
-        # there's no plate data at all (see render_stress_contour's "GUI-
-        # internal combined scalar" caveat), and _build_postscript's search
-        # would happily find and apply THAT instead -- confirmed to be
-        # dramatically slow for a large all-CBAR selection (a Stiffeners-
-        # only isolate, 14,134 elements, hung past 180s with it, vs. ~15s
-        # once skipped entirely). CBARs were never going to get a
-        # meaningful von Mises fringe anyway (see get_max_stress's
-        # "max_stress" vs "von_mises" distinction), so there's nothing lost
-        # by not trying.
-        want_stress_fringe = False
-        if render_op2_path is not None:
-            try:
-                peaks = get_max_stress(str(render_op2_path))
-            except ValueError:
-                peaks = {}
-            want_stress_fringe = any("von_mises" in peak for peak in peaks.values())
+        if result == "von_mises":
+            # Only actually attempt the vonMises fringe if a plate stress
+            # result (the only type get_max_stress calls "von_mises") is
+            # genuinely present in what's about to be loaded. This matters
+            # beyond just "don't bother" for a bar-only selection:
+            # pyNastranGUI internally synthesizes a bar-stress-derived
+            # pseudo-vonMises case even when there's no plate data at all
+            # (see render_stress_contour's "GUI-internal combined scalar"
+            # caveat), and _build_postscript's search would happily find and
+            # apply THAT instead -- confirmed to be dramatically slow for a
+            # large all-CBAR selection (a Stiffeners-only isolate, 14,134
+            # elements, hung past 180s with it, vs. ~15s once skipped
+            # entirely). CBARs were never going to get a meaningful von
+            # Mises fringe anyway (see get_max_stress's "max_stress" vs
+            # "von_mises" distinction), so there's nothing lost by not
+            # trying.
+            want_stress_fringe = False
+            if render_op2_path is not None:
+                try:
+                    peaks = get_max_stress(str(render_op2_path))
+                except ValueError:
+                    peaks = {}
+                want_stress_fringe = any("von_mises" in peak for peak in peaks.values())
+        else:
+            # Displacement is a genuine nodal result already in the OP2
+            # (whenever the case control requested it), not something
+            # pyNastranGUI synthesizes on the fly the way it does the bar
+            # pseudo-vonMises case above -- so there's no analogous hang
+            # risk to guard against, just "is there an OP2 loaded at all".
+            want_stress_fringe = render_op2_path is not None
 
         postscript_path = tmpdir_path / "postscript.py"
         postscript_path.write_text(
@@ -1544,6 +1591,7 @@ def _render(
                 resolved_zoom,
                 want_stress_fringe=want_stress_fringe,
                 custom_camera=custom_camera,
+                fringe_match=_FRINGE_RESULT_MATCH[result],
                 legend_y=legend_y,
             )
         )
@@ -1678,13 +1726,23 @@ def render_stress_contour(
     camera: str = "auto",
     zoom: float | None = None,
     timeout: float | None = None,
+    result: str = "von_mises",
 ) -> dict[str, Any]:
     """Same as render_model_view, but also loads op2_path and colors the
-    view by von Mises stress. The result dict includes "fringe_set": True
-    if a von Mises result case was found and applied, False if the OP2 has
-    no such case (e.g. a bar-only model -- see get_max_stress's "max_stress"
-    vs "von_mises" distinction) and pyNastranGUI's default coloring was
-    left in place instead.
+    view by a result -- "von_mises" (default) or "displacement" (nodal
+    translational displacement magnitude, T_XYZ; rotational displacement
+    isn't exposed here). The result dict includes "fringe_set": True if a
+    matching result case was found and applied, False if the OP2 has no
+    such case (e.g. a bar-only model with result="von_mises" -- see
+    get_max_stress's "max_stress" vs "von_mises" distinction) and
+    pyNastranGUI's default coloring was left in place instead.
+
+    result="displacement" doesn't support hide_groups/hide_property_ids/
+    isolate_groups/isolate_property_ids (raises if combined) -- the OP2
+    trimming those need to avoid a real pyNastranGUI hang (see
+    _write_filtered_op2) only preserves stress tables, so a displacement
+    fringe on a trimmed OP2 would silently find nothing to show. Render the
+    full model for a displacement contour.
 
     camera: "iso"/"top"/"side"/"front" (see _CAMERA_PRESETS), or the default,
     "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
@@ -1760,6 +1818,7 @@ def render_stress_contour(
         camera=camera,
         zoom=zoom,
         timeout=timeout,
+        result=result,
     )
 
 
