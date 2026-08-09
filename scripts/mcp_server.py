@@ -669,11 +669,29 @@ def describe_loads_and_boundary_conditions(bdf_path: str) -> dict[str, Any]:
 
 # Deliberately minimal (named presets, not full 6-DOF control) per issue #9's
 # scope. (azimuth, elevation) in degrees, applied after a camera reset.
+#
+# "planform" is tuned to match the angle NASA's own CRM wingbox FEM
+# description (Figure 1) uses for its overview renders: span laid out
+# horizontally in frame (azimuth near 0, like "top", rather than "iso"'s 45
+# -- confirmed by rendering: "iso" rotates this wingbox into a tall
+# PORTRAIT shape that wastes most of a landscape frame, since azimuth=45
+# turns out to rotate span into the vertical axis for this model's
+# orientation) with just enough elevation drop from "top"'s 89 to reveal
+# the leading-edge face and root end-cap as depth cues (89 alone reads as
+# nearly flat/orthographic; picked 65 empirically by rendering 60/65/70/75
+# and comparing against NASA's figure -- 65-70 was the best match, 75+
+# reads too flat, 60 shows more front face than NASA's own renders do).
+# azimuth=10 (vs. 0) adds a touch of the trailing-edge sliver too, closer
+# to NASA's figure than a perfectly axis-aligned 0. No default zoom is
+# baked in here (see render_model_view's docstring on why) -- callers
+# wanting the full frame filled should pass zoom=~2.0 explicitly, verified
+# by eye against this model.
 _CAMERA_PRESETS = {
     "iso": (45.0, 20.0),
     "top": (0.0, 89.0),
     "side": (90.0, 0.0),
     "front": (0.0, 0.0),
+    "planform": (10.0, 65.0),
 }
 
 _DEFAULT_RENDER_TIMEOUT_S = 300
@@ -1723,11 +1741,19 @@ def render_model_view(
     one of these. *_property_ids filter by raw PSHELL/PBAR property ID
     instead (or in addition) -- the fallback when no .ses file exists.
 
-    camera: default "iso" (also "top"/"side"/"front", see _CAMERA_PRESETS) applies a
-    generic preset chosen for the whole original model, which may not suit
-    an isolated subset's actual shape well -- e.g. isolating thin,
-    mostly-planar groups like ribs can render them near edge-on, collapsed
-    into an unreadable sliver (confirmed against a real render). Pass
+    camera: default "iso" (also "top"/"side"/"front"/"planform", see
+    _CAMERA_PRESETS) applies a generic preset chosen for the whole original
+    model, which may not suit an isolated subset's actual shape well --
+    e.g. isolating thin, mostly-planar groups like ribs can render them
+    near edge-on, collapsed into an unreadable sliver (confirmed against a
+    real render). "planform" is a report-style overview angle (span laid
+    out horizontally, elevated enough to reveal the leading edge and root
+    end-cap as depth cues) tuned to match NASA's own CRM wingbox FEM
+    description figures -- a better default than "iso" for a single "what
+    does this whole model look like" shot on a long, thin, swept structure
+    like a wingbox, where "iso" rotates the span into a tall portrait shape
+    that wastes most of a landscape frame (see _CAMERA_PRESETS' comment).
+    Pass
     camera="auto" together with isolate_groups/isolate_property_ids instead
     to aim for the isolated elements' shared face normal, tilted ~40 degrees
     off it, fanning out parallel elements so each is distinguishable rather
@@ -1820,8 +1846,8 @@ def render_stress_contour(
     fringe on a trimmed OP2 would silently find nothing to show. Render the
     full model for a displacement contour.
 
-    camera: "iso"/"top"/"side"/"front" (see _CAMERA_PRESETS), or the default,
-    "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
+    camera: "iso"/"top"/"side"/"front"/"planform" (see _CAMERA_PRESETS), or
+    the default, "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
     governing (highest von Mises) plate element via get_max_stress, then
     views the model from whichever of the 8 canonical isometric octants
     (equal angle to all three world axes -- the standard engineering-

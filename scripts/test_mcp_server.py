@@ -521,6 +521,19 @@ def test_front_camera_preset_is_the_unrotated_reset_view():
     assert ms._CAMERA_PRESETS["front"] == (0.0, 0.0)
 
 
+def test_planform_camera_preset_matches_nasa_report_angle():
+    """"planform" is tuned (by rendering and comparing against NASA's own
+    CRM wingbox FEM description figures) to match their report-style
+    overview angle: azimuth near 0 keeps the span horizontal in frame (like
+    "top"), rather than "iso"'s 45 degrees, which rotates this wingbox's
+    span into a tall portrait shape that wastes most of a landscape frame.
+    Elevation sits between "front" (0, no depth cues) and "top" (89, reads
+    flat/orthographic) to reveal the leading edge and root end-cap."""
+    azimuth, elevation = ms._CAMERA_PRESETS["planform"]
+    assert azimuth != ms._CAMERA_PRESETS["iso"][0]
+    assert 0.0 < elevation < 89.0
+
+
 def test_render_model_view_hide_groups_without_ses_path(proper_bdf: Path, tmp_path: Path):
     with pytest.raises(ValueError, match="ses_path"):
         ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), hide_groups=["Skins"])

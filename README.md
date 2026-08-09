@@ -89,12 +89,18 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   the ribs") -- named groups are parsed from a case study's `.ses` file
   when it has one (`ses_path`, see `ses_groups.py`), with property-ID
   filtering as the fallback. `camera` picks a named preset (`"iso"`,
-  `"top"`, `"side"`, `"front"`) or `"auto"` (`render_stress_contour`'s default), which
-  aims itself instead of guessing: at whichever of the 8 canonical
-  isometric octants best faces the governing stress element normally, or
-  at an isolated group's shared face normal (tilted to fan out parallel
-  elements like ribs so each is distinguishable) when isolating. `zoom`
-  tightens the frame, auto-applied
+  `"top"`, `"side"`, `"front"`, `"planform"`) or `"auto"`
+  (`render_stress_contour`'s default), which aims itself instead of
+  guessing: at whichever of the 8 canonical isometric octants best faces
+  the governing stress element normally, or at an isolated group's shared
+  face normal (tilted to fan out parallel elements like ribs so each is
+  distinguishable) when isolating. `"planform"` is tuned to match NASA's
+  own CRM wingbox FEM description figures -- span horizontal in frame,
+  elevated just enough to reveal the leading edge and root end-cap as
+  depth cues -- a better single "what does this model look like" overview
+  than `"iso"`, which rotates a long swept wingbox into a tall portrait
+  shape that wastes most of a landscape frame (see `_CAMERA_PRESETS`'
+  comment in `scripts/mcp_server.py`). `zoom` tightens the frame, auto-applied
   by default since a plain reset leaves significant empty margin. Isolating
   with `render_stress_contour` transparently trims the OP2 to match the
   isolated element set first -- pairing a filtered geometry with the full
