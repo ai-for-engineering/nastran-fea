@@ -74,10 +74,11 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   when it has one (`ses_path`, see `ses_groups.py`), with property-ID
   filtering as the fallback. `camera` picks a named preset (`"iso"`,
   `"top"`, `"side"`) or `"auto"` (`render_stress_contour`'s default), which
-  aims itself instead of guessing: at the governing stress element's
-  outward face normal normally, or at an isolated group's shared face
-  normal (tilted to fan out parallel elements like ribs so each is
-  distinguishable) when isolating. `zoom` tightens the frame, auto-applied
+  aims itself instead of guessing: at whichever of the 8 canonical
+  isometric octants best faces the governing stress element normally, or
+  at an isolated group's shared face normal (tilted to fan out parallel
+  elements like ribs so each is distinguishable) when isolating. `zoom`
+  tightens the frame, auto-applied
   by default since a plain reset leaves significant empty margin. Isolating
   with `render_stress_contour` transparently trims the OP2 to match the
   isolated element set first -- pairing a filtered geometry with the full

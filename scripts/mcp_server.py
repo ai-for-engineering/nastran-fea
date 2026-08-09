@@ -411,6 +411,13 @@ _CAMERA_PRESETS = {
 
 _DEFAULT_RENDER_TIMEOUT_S = 300
 
+# pyNastranGUI's default main-window render size on this setup, confirmed
+# from actual screenshot dimensions (1606x768) -- used to pick a camera
+# roll (view_up) that matches the OUTPUT frame's aspect ratio rather than
+# whatever aspect the model's own silhouette happens to have. See
+# _up_vector_for_best_frame_fit.
+_RENDER_ASPECT_RATIO = 1606.0 / 768.0
+
 
 def _eids_for_groups(names: list[str], ses_path: str | None) -> set[int]:
     if not ses_path:
@@ -608,18 +615,34 @@ def _write_filtered_op2(op2_path: Path, kept_eids: set[int], output_path: Path) 
     op2.write_op2(str(output_path))
 
 
-def _up_vector_for_horizontal_long_axis(view_direction, points) -> "np.ndarray":
+def _up_vector_for_best_frame_fit(
+    view_direction, points, target_aspect: float = _RENDER_ASPECT_RATIO, n_steps: int = 360
+) -> "np.ndarray":
     """Given a view direction and a (n, 3) array of world-space points,
-    return a view_up vector such that the points' long axis (found via PCA,
-    projected into the plane perpendicular to view_direction) lands
-    horizontal in the rendered frame rather than at some arbitrary angle.
+    return a view_up vector that rolls the camera so the points' bounding
+    box, projected into the plane perpendicular to view_direction, matches
+    the render's own aspect ratio as closely as possible.
 
-    A landscape screenshot fills far more of the frame this way (confirmed
-    during development: an arbitrary fixed up-vector left a tapered,
-    diagonally-oriented wing using ~30% of frame width despite using ~80% of
-    frame height, since ResetCamera fits the axis-aligned bounding box, not
-    the actual silhouette) -- shared by both the governing-stress-element
-    camera and the isolated-group camera below.
+    ResetCamera fits whichever dimension (screen width or height) is more
+    constraining and leaves margin on the other -- it can't change the
+    frame's shape. So the fraction of the frame actually filled is governed
+    entirely by how close the projected bounding box's aspect ratio is to
+    the frame's, not by how tightly the box wraps the model. A previous
+    PCA-based approach (align the point cloud's long axis horizontal)
+    picked whichever roll made the cloud's own natural bounding box
+    tightest, which is a different objective and can pick a badly-mismatched
+    aspect ratio -- confirmed against the isolated-ribs case, where a fan of
+    ~50 near-parallel rib planes has a naturally tall, narrow silhouette:
+    PCA picked a bounding-box aspect of ~4.3:1 against this setup's ~2.1:1
+    frame, filling the width but leaving large empty margins top and bottom.
+    Directly searching for the roll that matches the frame's aspect ratio
+    instead brings that to ~1:1 (no systematic margin on either axis) for
+    every case tried (ribs, shear webs, spars, skin panels).
+
+    Shared by both the governing-stress-element camera and the
+    isolated-group camera below. n_steps=360 (half-degree resolution over
+    the 0-180 degree period a roll axis repeats in) is cheap even for
+    thousands of points since it's fully vectorized.
     """
     import numpy as np
 
@@ -633,10 +656,22 @@ def _up_vector_for_horizontal_long_axis(view_direction, points) -> "np.ndarray":
     centered = points - points.mean(axis=0)
     u = centered @ e1
     v = centered @ e2
-    cov = np.cov(np.stack([u, v]))
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    short_axis_2d = eigvecs[:, np.argsort(eigvals)[0]]
-    return short_axis_2d[0] * e1 + short_axis_2d[1] * e2
+
+    thetas = np.linspace(0.0, np.pi, n_steps, endpoint=False)
+    cos_t = np.cos(thetas)[:, None]
+    sin_t = np.sin(thetas)[:, None]
+    # Rotating (u, v) by theta is equivalent to rolling the camera so that
+    # up = sin(theta)*e1 + cos(theta)*e2 maps to screen-vertical.
+    rotated_u = u[None, :] * cos_t - v[None, :] * sin_t
+    rotated_v = u[None, :] * sin_t + v[None, :] * cos_t
+    width = rotated_u.max(axis=1) - rotated_u.min(axis=1)
+    height = rotated_v.max(axis=1) - rotated_v.min(axis=1)
+    aspect = width / height
+    mismatch = np.abs(np.log(aspect / target_aspect))
+    theta = thetas[np.argmin(mismatch)]
+
+    up = np.sin(theta) * e1 + np.cos(theta) * e2
+    return up
 
 
 def _camera_look_direction_for_governing_element(
@@ -645,14 +680,24 @@ def _camera_look_direction_for_governing_element(
     tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
 ] | None:
     """Compute (focal_point, camera_position, view_up) so a camera looking
-    through them stares straight down the outward face normal of whichever
-    plate element (CQUAD4/CTRIA3) has the governing (highest) von Mises
-    stress in op2_path -- see get_max_stress for why plate vs. bar stress
-    isn't blended into one number.
+    through them views the model from whichever isometric octant best faces
+    the outward face normal of whichever plate element (CQUAD4/CTRIA3) has
+    the governing (highest) von Mises stress in op2_path -- see
+    get_max_stress for why plate vs. bar stress isn't blended into one
+    number.
 
-    The point of aiming along the face normal specifically: it's the one
-    direction guaranteed to show that element unobstructed, since it's an
-    outer skin panel and nothing sits further outward along its own normal.
+    An isometric direction (equal angle to all three world axes) is a
+    standard engineering-drawing convention specifically because no single
+    axis is degenerate, so it can't collapse a flat panel edge-on the way a
+    "top"/"side" preset can. Rather than aiming continuously straight down
+    the governing element's own computed normal (this function's previous
+    approach), this picks whichever of the 8 canonical isometric octants
+    the element's normal points most toward (highest dot product) --
+    simpler, a more standard/recognizable view, and more robust to messy
+    per-element geometry (a slightly-off normal from a warped quad still
+    resolves to the same octant, rather than continuously skewing the
+    computed direction).
+
     camera_position is placed far enough out (2x the model's bounding-box
     diagonal) that a subsequent vtkRenderer.ResetCamera() call -- which
     preserves view direction/up but repositions along it to fit the whole
@@ -698,9 +743,14 @@ def _camera_look_direction_for_governing_element(
     if np.dot(centroid - bbox_center, normal) < 0:
         normal = -normal
 
+    octant_directions = np.array(
+        [[sx, sy, sz] for sx in (1.0, -1.0) for sy in (1.0, -1.0) for sz in (1.0, -1.0)]
+    ) / np.sqrt(3.0)
+    view_from_direction = octant_directions[np.argmax(octant_directions @ normal)]
+
     diag = float(np.linalg.norm(bbox_max - bbox_min))
-    camera_position = bbox_center + normal * diag * 2.0
-    up = _up_vector_for_horizontal_long_axis(normal, all_coords)
+    camera_position = bbox_center + view_from_direction * diag * 2.0
+    up = _up_vector_for_best_frame_fit(view_from_direction, all_coords)
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
@@ -710,7 +760,7 @@ def _camera_look_direction_for_governing_element(
 
 
 def _camera_look_direction_for_isolated_group(
-    bdf_path: Path, eids: set[int], tilt_deg: float = 65.0
+    bdf_path: Path, eids: set[int], tilt_deg: float = 40.0
 ) -> tuple[
     tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
 ] | None:
@@ -728,6 +778,16 @@ def _camera_look_direction_for_isolated_group(
     normal, mostly looking along it but angled enough to see each element's
     extent -- is the standard oblique "stacked bulkheads" engineering view:
     the parallel elements fan out and are individually distinguishable.
+
+    tilt_deg=40 (previously 65, before _up_vector_for_best_frame_fit
+    existed) trades a little separation for a lot more per-element face
+    area: at 65 degrees each rib/web is viewed close to edge-on, so once
+    framing stopped being the bottleneck (see
+    _up_vector_for_best_frame_fit), the plates themselves were still too
+    foreshortened to show their own internal stress gradient -- confirmed
+    by re-rendering the real ribs and shear-web groups at both angles: 40
+    degrees keeps every element distinguishable while making each one wide
+    enough to actually read.
 
     The shared normal is the average of each element's own local outward
     normal (hemisphere-aligned first, since node winding can flip sign
@@ -784,7 +844,7 @@ def _camera_look_direction_for_isolated_group(
     view_from_direction /= np.linalg.norm(view_from_direction)
 
     camera_position = bbox_center + view_from_direction * diag * 2.0
-    up = _up_vector_for_horizontal_long_axis(view_from_direction, group_points)
+    up = _up_vector_for_best_frame_fit(view_from_direction, group_points)
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
@@ -833,10 +893,11 @@ def _build_postscript(
     custom_camera, when given, overrides the named azimuth/elevation preset
     entirely: (focal_point, position, view_up), all (x, y, z) world
     coordinates/vectors, computed by
-    _camera_look_direction_for_governing_element so the camera looks
-    straight down the outward face normal of the governing stress element --
-    guaranteeing an unobstructed view of it -- then vtkRenderer.ResetCamera()
-    fits the whole model to the frame along that fixed direction.
+    _camera_look_direction_for_governing_element so the camera views the
+    model from whichever isometric octant best faces the governing stress
+    element's outward face normal -- guaranteeing an unobstructed view of
+    it -- then vtkRenderer.ResetCamera() fits the whole model to the frame
+    along that fixed direction.
 
     want_stress_fringe searches the loaded result cases for one whose name
     matches "vonmises" case/whitespace/underscore-insensitively (pyNastran
@@ -1187,7 +1248,7 @@ def render_model_view(
     mostly-planar groups like ribs can render them near edge-on, collapsed
     into an unreadable sliver (confirmed against a real render). Pass
     camera="auto" together with isolate_groups/isolate_property_ids instead
-    to aim for the isolated elements' shared face normal, tilted ~65 degrees
+    to aim for the isolated elements' shared face normal, tilted ~40 degrees
     off it, fanning out parallel elements so each is distinguishable rather
     than overlapping (see _camera_look_direction_for_isolated_group).
     "auto" isn't the default here because it has nothing to aim at without
@@ -1253,14 +1314,19 @@ def render_stress_contour(
     camera: "iso"/"top"/"side" (see _CAMERA_PRESETS), or the default,
     "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
     governing (highest von Mises) plate element via get_max_stress, then
-    points the camera straight down that element's outward face normal
-    before fitting the whole model to the frame -- because it's an outer
-    skin panel, nothing else in the model sits further outward along that
-    exact direction, so the governing element is guaranteed to be visible
-    and unobstructed rather than potentially hidden behind other geometry or
-    foreshortened edge-on the way a fixed preset can leave it. WITH
-    isolate_groups/isolate_property_ids, "auto" aims for the isolated
-    elements' shared face normal instead (see
+    views the model from whichever of the 8 canonical isometric octants
+    (equal angle to all three world axes -- the standard engineering-
+    drawing convention, chosen specifically because no single axis is
+    degenerate the way a "top"/"side" preset can be) best faces that
+    element's outward face normal, before fitting the whole model to the
+    frame. This isn't a hard occlusion guarantee the way aiming exactly
+    down the element's own normal would be (some other part of the model
+    could in principle sit further out along that octant's fixed diagonal),
+    but it keeps the governing element close to face-on and avoids the
+    foreshortened-edge-on failure mode a fixed preset can leave it in, while
+    being a simpler, more standard view than a continuously-computed exact
+    direction. WITH isolate_groups/isolate_property_ids, "auto" aims for the
+    isolated elements' shared face normal instead (see
     _camera_look_direction_for_isolated_group) -- isolating already removes
     any occlusion concern, so showing the isolated sub-component itself well
     (e.g. fanning out parallel ribs instead of collapsing them edge-on)
