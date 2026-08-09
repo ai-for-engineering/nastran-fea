@@ -463,6 +463,14 @@ def test_render_model_view_invalid_camera(proper_bdf: Path, tmp_path: Path):
         ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), camera="bogus")
 
 
+def test_front_camera_preset_is_the_unrotated_reset_view():
+    """"front" applies zero azimuth/elevation on top of pyNastranGUI's own
+    camera reset -- i.e. whatever ResetCamera's default view direction is,
+    unrotated -- added for the blog's case-study overview (canonical
+    top/side/front/iso views), see issue #23."""
+    assert ms._CAMERA_PRESETS["front"] == (0.0, 0.0)
+
+
 def test_render_model_view_hide_groups_without_ses_path(proper_bdf: Path, tmp_path: Path):
     with pytest.raises(ValueError, match="ses_path"):
         ms.render_model_view(str(proper_bdf), str(tmp_path / "out.png"), hide_groups=["Skins"])

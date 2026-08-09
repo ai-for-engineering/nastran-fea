@@ -82,6 +82,135 @@ pipeline; it's a genuine capability gap in an open-source solver versus a
 commercial one, and it's exactly the kind of thing worth documenting rather
 than quietly working around by switching to a more convenient model.
 
+### Case control management, in more depth
+
+The one-liner above ("the case control section was authored for a different
+solver") is easy to skim past, so it's worth actually walking through what
+case control is and what the patch does to it.
+
+Case control is the part of a Nastran deck that sits above the bulk data
+and says what to *do* with the model it describes: which SPC (constraint)
+set and which LOAD set apply, which subcase(s) to run, and what results to
+output (`DISPLACEMENT`, `STRESS`, and so on). The bulk data defines the
+model; case control tells the solver which pieces of it to actually use for
+a given run. The NASA CRM deck ships with two subcases:
+
+```
+SUBCASE 1
+  LABEL Modes_Rigid
+  ANALYSIS MODES
+  SPC = 2
+  METHOD(STRUCTURE) = 1
+SUBCASE 2
+  LABEL GVW
+  ANALYSIS STATICS
+  SPC = 2
+  LOAD = 3
+```
+
+`ANALYSIS MODES`/`ANALYSIS STATICS` and the missing `SOL`/`CEND` header are
+OptiStruct syntax -- MYSTRAN expects `SOL 101` (linear statics) plus a
+`CEND`-delimited case control block using `=`-style requests instead. So
+`patch_case_control` doesn't try to translate OptiStruct's syntax
+line-for-line; it takes a narrower, more honest approach: scan every header
+line for the handful of request keywords it actually knows about
+(`SPC`, `MPC`, `LOAD`, `DISPLACEMENT`, `STRESS`, `SPCFORCES`, `ECHO`),
+keep whatever values it finds (falling back to sensible defaults for
+`ECHO`/`DISPLACEMENT`/`STRESS` if a value wasn't present), and emit one flat
+`SOL 101`/`CEND` block from them:
+
+```
+SOL 101
+CEND
+ECHO = NONE
+SPC = 2
+LOAD = 3
+DISPLACEMENT = ALL
+STRESS = ALL
+```
+
+Worth being explicit about what that means: **the two original subcases
+collapse into one.** Whatever `SPC`/`LOAD` values were present anywhere in
+the original header get merged into a single global case control -- there's
+no attempt to preserve multiple subcases or run the `Modes_Rigid` normal
+modes extraction (`ANALYSIS MODES`/`METHOD(STRUCTURE)`) at all. For this
+case study that's fine, since GVW statics is the subcase we actually care
+about and SOL 101 doesn't do normal modes in the first place -- but it's a
+real, deliberate scope limit of this patch recipe, not a general
+OptiStruct-to-MYSTRAN case-control translator. A deck relying on multiple
+distinct subcases each needing their own SPC/LOAD combination would need a
+smarter patch than this one.
+
+### MYSTRAN: background and where it falls short of commercial Nastran
+
+Every solved F06 in this project carries the same attribution line:
+
+```
+MYSTRAN developed by Dr Bill Case
+*** Please report any problems to mystransolver@gmail.com ***
+```
+
+MYSTRAN is a community-maintained, open-source Nastran-compatible solver
+([source/releases](https://github.com/MystranSolver/MYSTRANSolver)) --
+free to use, and genuinely reads/writes Nastran bulk-data syntax, which is
+exactly why it fits this project's open-source-only constraint. It's worth
+being upfront, though, about what "Nastran-compatible" means in practice
+here: MYSTRAN implements a meaningful but *bounded* subset of what
+commercial MSC/NX Nastran do. This case study only exercises `SOL 101`
+(linear statics); MYSTRAN also supports normal modes, but the deep bench of
+solution sequences commercial Nastran ships -- nonlinear statics/dynamics,
+transient and frequency response, thermal, aeroelasticity, design
+optimization, and a much broader materials/element library -- either isn't
+there or isn't as complete. That's a reasonable trade for a
+volunteer-maintained open-source project, not a criticism of it, but it's
+the kind of thing worth knowing before assuming any given commercial-Nastran
+deck will "just work" on the open-source stack.
+
+The concrete example already surfaced above (the uCRM/MAT2 rejection) is
+one instance of that boundary: MYSTRAN's `PSHELL` implementation rejects a
+nonzero `MID4` (the membrane-bending coupling term used to smear a
+stiffened panel into one equivalent anisotropic shell property). Commercial
+Nastran supports the fully coupled form; MYSTRAN currently doesn't. It's a
+real capability gap, not a bug in this pipeline -- and exactly the kind of
+gap worth checking for before committing to a model, rather than
+discovering it after a solve fails.
+
+### Sizing up the model
+
+"50+ ribs, dual spars, and stringers" is easy to write and hard to picture.
+Before getting into results, it's worth actually looking at what this
+model is -- rendered straight from the BDF via `render_model_view`, no
+CAD tool involved, at a few different angles chosen to reveal different
+things about it:
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_overview_top.png" alt="Top-down planform view of the full NASA CRM wingbox mesh" style="max-width:100%;">
+
+*Top (`camera="top"`) -- the planform: sweep, taper, and just how dense the
+shell mesh actually is toward the root, where the structure carries the
+most load.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_overview_iso.png" alt="Isometric view of the full NASA CRM wingbox mesh, showing depth and taper" style="max-width:100%;">
+
+*Iso (`camera="iso"`) -- the same structure with actual depth: the boxy,
+multi-cell root (where ribs, spars, and stringers are all packed close
+together) tapering to a thin, simple tip.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_overview_side.png" alt="Edge-on side view of the full NASA CRM wingbox mesh, showing it as a thin tapering profile" style="max-width:100%;">
+
+*Side (`camera="side"`) -- edge-on, the wingbox all but disappears into a
+thin curved sliver. That's not a rendering problem; it's a real, useful
+fact about the geometry -- a wingbox is, structurally, a thin-walled
+shell box, and this view is the most honest picture of just how thin.*
+
+Also worth showing what *doesn't* add information here: `camera="front"`
+(pyNastranGUI's un-rotated default view) turns out to look almost
+identical to the top view above, just rolled and re-zoomed slightly. For a
+structure this flat -- span vastly exceeding both chord and thickness --
+"front" and "top" end up looking down nearly the same axis. That's a
+genuine property of this model's proportions, not a bug in the camera
+logic; a boxier structure (a fuselage section, say) would actually
+differentiate the two.
+
 ## What's actually being applied: loads and boundary conditions
 
 Before trusting any stress number, the first thing a stress engineer

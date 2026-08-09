@@ -627,6 +627,7 @@ _CAMERA_PRESETS = {
     "iso": (45.0, 20.0),
     "top": (0.0, 89.0),
     "side": (90.0, 0.0),
+    "front": (0.0, 0.0),
 }
 
 _DEFAULT_RENDER_TIMEOUT_S = 300
@@ -1570,7 +1571,7 @@ def render_model_view(
     one of these. *_property_ids filter by raw PSHELL/PBAR property ID
     instead (or in addition) -- the fallback when no .ses file exists.
 
-    camera: default "iso" (also "top"/"side", see _CAMERA_PRESETS) applies a
+    camera: default "iso" (also "top"/"side"/"front", see _CAMERA_PRESETS) applies a
     generic preset chosen for the whole original model, which may not suit
     an isolated subset's actual shape well -- e.g. isolating thin,
     mostly-planar groups like ribs can render them near edge-on, collapsed
@@ -1639,7 +1640,7 @@ def render_stress_contour(
     vs "von_mises" distinction) and pyNastranGUI's default coloring was
     left in place instead.
 
-    camera: "iso"/"top"/"side" (see _CAMERA_PRESETS), or the default,
+    camera: "iso"/"top"/"side"/"front" (see _CAMERA_PRESETS), or the default,
     "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
     governing (highest von Mises) plate element via get_max_stress, then
     views the model from whichever of the 8 canonical isometric octants

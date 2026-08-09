@@ -85,7 +85,7 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   the ribs") -- named groups are parsed from a case study's `.ses` file
   when it has one (`ses_path`, see `ses_groups.py`), with property-ID
   filtering as the fallback. `camera` picks a named preset (`"iso"`,
-  `"top"`, `"side"`) or `"auto"` (`render_stress_contour`'s default), which
+  `"top"`, `"side"`, `"front"`) or `"auto"` (`render_stress_contour`'s default), which
   aims itself instead of guessing: at whichever of the 8 canonical
   isometric octants best faces the governing stress element normally, or
   at an isolated group's shared face normal (tilted to fan out parallel
