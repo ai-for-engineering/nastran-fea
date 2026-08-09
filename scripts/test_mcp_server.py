@@ -834,3 +834,53 @@ def test_render_stress_contour_displacement_end_to_end(
     assert result["fringe_set"] is True
     assert output_png.is_file()
     assert output_png.stat().st_size > 0
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_stress_contour_axial_end_to_end(cbar_bdf: Path, tmp_path: Path):
+    """result="axial" colors CBARs by their real per-element axial-stress
+    result ("Stress XX", RealBarStressArray's own column) -- unlike
+    result="von_mises", which CBARs have no genuine value for at all (see
+    get_max_stress's "max_stress" vs "von_mises" distinction). Exercises
+    _build_postscript's "__bar_axial__" branch (method-label lookup, not a
+    resname substring search) via the real tool, and confirms it also works
+    combined with isolate_property_ids -- axial is a stress-table result,
+    kept by _write_filtered_op2's trim, unlike displacement."""
+    solver_result = ms.run_solver(str(cbar_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    output_png = tmp_path / "axial.png"
+    result = ms.render_stress_contour(
+        str(cbar_bdf), solver_result["op2_path"], str(output_png),
+        camera="iso", result="axial", isolate_property_ids=[1], timeout=60,
+    )
+    assert result["success"], result.get("errors")
+    assert result["fringe_set"] is True
+    assert output_png.is_file()
+    assert output_png.stat().st_size > 0
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_stress_contour_axial_no_bar_stress(two_property_bdf: Path, tmp_path: Path):
+    """A plate-only model (no CBAR at all) has no "Stress XX" case to find --
+    result="axial" should render with pyNastranGUI's default coloring left
+    in place (fringe_set=False), the same graceful fallback von_mises gets
+    against a bar-only model, rather than raising."""
+    solver_result = ms.run_solver(str(two_property_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    output_png = tmp_path / "axial_no_bars.png"
+    result = ms.render_stress_contour(
+        str(two_property_bdf), solver_result["op2_path"], str(output_png),
+        camera="iso", result="axial",
+    )
+    assert result["success"], result.get("errors")
+    assert result["fringe_set"] is False
+    assert output_png.is_file()
+    assert output_png.stat().st_size > 0

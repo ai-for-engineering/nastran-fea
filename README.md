@@ -100,11 +100,17 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   isolated element set first -- pairing a filtered geometry with the full
   untrimmed OP2 is a real, confirmed hang in pyNastranGUI.
   `render_stress_contour`'s `result` parameter picks what to color by:
-  `"von_mises"` (default) or `"displacement"` (nodal translational
-  displacement magnitude). `result="displacement"` doesn't support
+  `"von_mises"` (default, plate elements only), `"displacement"` (nodal
+  translational displacement magnitude), or `"axial"` (bar elements only --
+  CBAR's real per-element axial direct stress, not the GUI-synthesized
+  pseudo-vonMises value bars get lumped into under `"von_mises"`; see
+  `_build_postscript`'s `"__bar_axial__"` branch for how it's found, since
+  bar-stress cases aren't keyed by a descriptive name the way plate/
+  displacement cases are). `result="displacement"` doesn't support
   `hide_*`/`isolate_*` (raises if combined) -- the OP2 trimming those need
   only preserves stress tables, so a displacement fringe on a trimmed OP2
-  would silently find nothing to show.
+  would silently find nothing to show; `"von_mises"` and `"axial"` are both
+  stress-table results and support `hide_*`/`isolate_*` fine.
 
 ## 3D visualization (pyNastranGUI)
 
