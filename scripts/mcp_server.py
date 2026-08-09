@@ -1451,17 +1451,22 @@ def _build_postscript(
     selects a von Mises stress result as the active fringe, takes a
     screenshot, and exits.
 
-    magnify=1 is passed to on_take_screenshot explicitly: pyNastranGUI's
-    default (magnify=5, i.e. vtkRenderLargeImage-based tiling) renders the
-    3D geometry at 5x resolution but NOT the 2D overlay actors (legend,
+    magnify=1 matches pyNastranGUI's own screenshot behavior: its default
+    (magnify=5, i.e. vtkRenderLargeImage-based tiling) renders the 3D
+    geometry at 5x resolution but NOT the 2D overlay actors (legend,
     orientation axes) at the same scale, making them look disproportionately
     huge relative to the model in the final image -- confirmed by comparing
     screenshots with and without an explicit magnify during development.
+    The screenshot itself is captured manually (see screenshot_block below)
+    rather than via self.on_take_screenshot -- that method forces magnify=1
+    through the same vtkRenderLargeImage(self.rend)/vtkPNGWriter path used
+    here, so nothing about the image itself changes.
 
     The background is set to flat white (pyNastranGUI's own
     set_background_color_to_white, normally used for GIF export) instead of
     its default dark gradient -- reads better in a blog post. The corner
-    orientation-axes triad is always hidden and the scalar-bar legend is
+    orientation-axes triad is shown (see axes_block below) and repositioned
+    into whichever corner the legend isn't using; the scalar-bar legend is
     always shrunk to a fixed, modest font size (rather than pyNastranGUI's
     default, which auto-scales the legend text to fill its bounding box --
     on an 11-label bar that makes 5-digit stress values render enormous, as
@@ -1525,23 +1530,45 @@ def _build_postscript(
     # create_coordinate_system) -- NOT the small screen-corner orientation
     # widget set_corner_axis_visiblity controls. It sits far from the
     # model's own geometry (the origin is rarely inside the model's bounding
-    # box), so it must be hidden BEFORE any ResetCamera() call, not after --
-    # confirmed by testing: hiding it afterward still let its off-to-the-side
-    # bounds skew the auto-fit, pushing the actual model to one edge of the
-    # frame instead of filling it. Two other approaches to show *some* axis
-    # indicator were tried and rejected: (1) leaving the corner triad widget
-    # itself visible (set_corner_axis_visiblity(True)) renders nothing in
-    # the final image -- confirmed by a real render with it enabled -- since
-    # on_take_screenshot's vtkRenderLargeImage captures self.rend directly,
-    # not the interactor-attached vtkOrientationMarkerWidget's own overlay
-    # renderer; (2) re-showing "Global XYZ" itself (even repositioned near
-    # the model, after ResetCamera) reintroduces the exact framing bug this
-    # code exists to avoid -- confirmed by a real render where doing so
-    # shrank the model to a small corner of the frame despite an unchanged
-    # zoom call. Both stay hidden; orientation_caption below is the actual
-    # fix (see _build_postscript's caption_block).
-    axes_block = """\
-self.set_corner_axis_visiblity(False)
+    # box), so it must stay hidden and BEFORE any ResetCamera() call, not
+    # after -- confirmed by testing: hiding it afterward still let its
+    # off-to-the-side bounds skew the auto-fit, pushing the actual model to
+    # one edge of the frame instead of filling it; showing it at all (even
+    # repositioned near the model, after ResetCamera) reintroduces the same
+    # bug, confirmed by a real render where doing so shrank the model to a
+    # small corner of the frame despite an unchanged zoom call.
+    #
+    # The small screen-corner triad (self.gui.corner_axis, a real
+    # vtkOrientationMarkerWidget/vtkAxesActor -- a genuine 3D axis system,
+    # not a 2D drawing of one) is a completely different object and does NOT
+    # have that framing problem: it renders into its own tiny corner
+    # viewport, independent of the main renderer's bounds. It was previously
+    # believed to be un-capturable -- a real render with
+    # set_corner_axis_visiblity(True) plus the normal self.on_take_screenshot
+    # call showed nothing in any corner. Reading pyNastran's own
+    # tool_actions.py explains why: on_take_screenshot's _screenshot_setup
+    # unconditionally does `axes_actor.SetVisibility(False)` right before
+    # capturing (then _screenshot_teardown sets it back True after) --
+    # regardless of what this postscript set beforehand. It's not that the
+    # capture mechanism can't see the widget; pyNastran's own code always
+    # hides it for screenshots. Confirmed by bypassing self.on_take_screenshot
+    # and driving the same vtkRenderLargeImage(self.rend)/vtkPNGWriter path
+    # by hand (see screenshot_block below): the corner triad shows up fine.
+    # It's repositioned into whichever corner the legend isn't using (see
+    # axis_viewport below) since the default bottom-left placement collides
+    # with pyNastranGUI's own Max/Min corner text.
+    if not want_stress_fringe or legend_y >= 0.3:
+        # No legend, or legend in its top-right placement -> bottom-right
+        # is free (bottom-left is reserved for pyNastran's Max/Min text).
+        axis_viewport = (0.83, 0.0, 0.99, 0.16)
+    else:
+        # Legend dropped to its bottom-right placement -> top-right is free
+        # instead (top-left is reserved for orientation_caption below).
+        axis_viewport = (0.83, 0.84, 0.99, 1.0)
+
+    axes_block = f"""\
+self.set_corner_axis_visiblity(True)
+self.gui.corner_axis.SetViewport({axis_viewport[0]!r}, {axis_viewport[1]!r}, {axis_viewport[2]!r}, {axis_viewport[3]!r})
 if 'Global XYZ' in self.geometry_actors:
     self.geometry_actors['Global XYZ'].VisibilityOff()
 """
@@ -1645,16 +1672,23 @@ with open({fringe_flag_repr}, "w") as _f:
     _f.write("1" if _fringe_set else "0")
 """
 
-    # Text, not a 3D widget or actor -- see axes_block's comment for why the
-    # two actor/widget-based approaches that were tried didn't work. A plain
-    # vtkTextActor is a 2D screen-space overlay in the same renderer
-    # (self.rend) real corner-text/legend actors already use successfully,
-    # so it shows up in on_take_screenshot's capture with no framing side
-    # effects (confirmed: same output size/framing with and without it).
+    # A plain text label, separate from the real 3D triad in axes_block
+    # above: the triad shows genuine X/Y/Z geometry but has no idea those
+    # letters mean "span"/"chord"/"up" for this particular wing, or which
+    # end is root -- that mapping is exactly what this caption spells out.
     # Top-left, since every render style this module produces (fixed
     # presets and both custom-camera modes) leaves it empty -- content runs
     # diagonally from lower-left to upper-right, the corner Max/Min block
-    # already owns bottom-left, and the legend owns top-right.
+    # already owns bottom-left, and the legend/triad own the right side.
+    # "Empty" is only true on average, though -- a real render against this
+    # case study's own root-at-left governing-element view showed the root
+    # end's own silhouette reaching all the way to the top edge, overlapping
+    # the caption text. Unlike the legend (which has a free opposite corner
+    # to fall back to via _legend_corner_y), the caption has nowhere else to
+    # go -- every other corner is already claimed. A translucent white
+    # background behind the text (vtkTextProperty's own background support)
+    # keeps it legible regardless of what geometry ends up behind it,
+    # without needing to predict/avoid the model's silhouette per camera.
     caption_block = ""
     if orientation_caption:
         caption_block = f"""
@@ -1663,9 +1697,29 @@ _orient_txt = _vtk_orient.vtkTextActor()
 _orient_txt.SetInput({orientation_caption!r})
 _orient_txt.GetTextProperty().SetFontSize(16)
 _orient_txt.GetTextProperty().SetColor(0.0, 0.0, 0.0)
+_orient_txt.GetTextProperty().SetBackgroundColor(1.0, 1.0, 1.0)
+_orient_txt.GetTextProperty().SetBackgroundOpacity(0.75)
 _orient_txt.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
 _orient_txt.GetPositionCoordinate().SetValue(0.02, 0.94)
 self.rend.AddActor2D(_orient_txt)
+"""
+
+    # Not self.on_take_screenshot -- see axes_block's comment: its
+    # _screenshot_setup/_screenshot_teardown unconditionally hide the corner
+    # axis triad for the duration of the capture, which would silently
+    # undo axes_block above regardless of ordering. This replicates its
+    # magnify=1 path by hand (vtkRenderLargeImage(self.rend) -> vtkPNGWriter,
+    # the same objects on_take_screenshot itself uses) minus that hide step.
+    screenshot_block = f"""\
+import vtk as _vtk_shot
+self.rend.GetRenderWindow().Render()
+_render_large = _vtk_shot.vtkRenderLargeImage()
+_render_large.SetInput(self.rend)
+_render_large.SetMagnification(1)
+_writer = _vtk_shot.vtkPNGWriter()
+_writer.SetInputConnection(_render_large.GetOutputPort())
+_writer.SetFileName({output_png_repr})
+_writer.Write()
 """
 
     return f"""\
@@ -1676,7 +1730,7 @@ self.zoom({zoom})
 {fringe_block}
 {legend_block}
 {caption_block}
-self.on_take_screenshot({output_png_repr}, magnify=1, show_msg=False)
+{screenshot_block}
 
 import sys
 sys.exit(0)

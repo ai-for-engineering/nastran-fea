@@ -129,20 +129,21 @@ were cross-checked directly against NASA's own
 
 MYSTRAN solves the patched "GVW" subcase cleanly.
 
-Every render from here on also carries a small caption stating which axis
-is span/chord/up, plus "root at left" wherever the camera guarantees it.
-Both are read off the geometry itself, not hardcoded per model: span is
-whichever axis has the largest bounding-box range, thickness the smallest,
-chord whatever's left; root is whichever end of the span axis has the
-bigger chord x thickness cross-section (a real wing tapers). The
-governing-element camera itself uses the same detection -- it picks
-whichever of {thickness, chord} the governing element's own outward normal
-aligns with more strongly as the dominant viewing axis (guaranteeing
-visibility) and rolls the camera so root always lands on the left. That
-replaces an earlier approach that aimed at one of 8 fixed isometric
-octants, weighting span equally with the other two axes -- which is
-exactly what let it occasionally rotate this long wing into an
-almost-vertical portrait view.
+Every render from here on carries a real 3D axis triad (bottom-right,
+top-right when the legend needs that corner instead) plus a small caption
+mapping it to the wing's own geometry -- which axis is span/chord/up, and
+"root at left" wherever the camera guarantees it. Both are read off the
+geometry itself, not hardcoded per model: span is whichever axis has the
+largest bounding-box range, thickness the smallest, chord whatever's left;
+root is whichever end of the span axis has the bigger chord x thickness
+cross-section (a real wing tapers). The governing-element camera itself
+uses the same detection -- it picks whichever of {thickness, chord} the
+governing element's own outward normal aligns with more strongly as the
+dominant viewing axis (guaranteeing visibility) and rolls the camera so
+root always lands on the left. That replaces an earlier approach that
+aimed at one of 8 fixed isometric octants, weighting span equally with the
+other two axes -- which is exactly what let it occasionally rotate this
+long wing into an almost-vertical portrait view.
 
 #### Tip displacement
 
