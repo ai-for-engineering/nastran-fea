@@ -63,6 +63,10 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   are deliberately not blended into one number), each with element ID and
   governing subcase, e.g.
   `{"cquad4": {"von_mises": ..., "element_id": ..., "subcase": ...}, "cbar": {"max_stress": ..., ...}}`.
+  Bar-type results also report which specific column governed:
+  `"component"` (`"axial"`, `"bending"`, or `"combined (axial + bending)"`)
+  and `"end"` (`"A"`/`"B"`, omitted for `"axial"` since it has no fixed
+  end) -- `"max_stress"` alone doesn't say which of those it actually is.
 - `describe_loads_and_boundary_conditions(bdf_path)` -- explains what's
   actually constraining and loading the model, per subcase: reads SPC/SPC1
   (following SPCADD combinations) for boundary conditions and

@@ -305,6 +305,27 @@ def _element_ids_for(arr: Any) -> Any:
     return arr.element
 
 
+
+# CBAR/CBEAM-style stress columns -> (component, end). "axial" has no fixed
+# end (constant along a bar with no distributed axial load, and pyNastran
+# only ever reports it once per element); the s1-s4 columns are bending
+# stress at that end's four cross-section stress-recovery points; smax/smin
+# are the combined (axial + bending) extreme at that end -- see the
+# CBAR-specific caveat in _peak_for_result's docstring for why "max_stress"
+# alone doesn't say which of these actually governed.
+_BAR_COLUMN_INFO: dict[str, tuple[str, str | None]] = {
+    "axial": ("axial", None),
+    "s1a": ("bending", "A"), "s2a": ("bending", "A"),
+    "s3a": ("bending", "A"), "s4a": ("bending", "A"),
+    "smaxa": ("combined (axial + bending)", "A"),
+    "smina": ("combined (axial + bending)", "A"),
+    "s1b": ("bending", "B"), "s2b": ("bending", "B"),
+    "s3b": ("bending", "B"), "s4b": ("bending", "B"),
+    "smaxb": ("combined (axial + bending)", "B"),
+    "sminb": ("combined (axial + bending)", "B"),
+}
+
+
 def _peak_for_result(arr: Any) -> dict[str, Any]:
     """Return the governing {"<quantity>": value, "element_id": ..., "subcase"
     omitted here} for a single subcase's stress array.
@@ -322,6 +343,15 @@ def _peak_for_result(arr: Any) -> dict[str, Any]:
     with "MS", e.g. MS_tension/MS_compression) are excluded: pyNastran fills
     them with large sentinel values (~1e10) when a margin isn't computed,
     which would otherwise dominate a naive max/abs over all columns.
+
+    "max_stress" alone doesn't say whether the governing value is axial,
+    bending, or the combined extreme, nor which end of the bar (A/B) it's
+    at -- so for the bar branch, the specific column that produced the max
+    (not just its value) is looked up in _BAR_COLUMN_INFO and reported as
+    "component" (and "end", when that column is tied to one) alongside
+    "max_stress". A column not in that table (e.g. an element type this
+    hasn't been taught about yet) reports its raw header name as
+    "component" and no "end", rather than raising.
     """
     import numpy as np
 
@@ -331,16 +361,29 @@ def _peak_for_result(arr: Any) -> dict[str, Any]:
     if "von_mises" in headers:
         quantity = "von_mises"
         values = arr.data[:, :, headers.index("von_mises")]
-    else:
-        quantity = "max_stress"
-        stress_cols = [i for i, h in enumerate(headers) if not h.startswith("MS")]
-        values = np.max(np.abs(arr.data[:, :, stress_cols]), axis=2)
+        itime, ientry = np.unravel_index(np.argmax(values), values.shape)
+        return {
+            quantity: float(values[itime, ientry]),
+            "element_id": int(elem_ids[ientry]),
+        }
 
+    quantity = "max_stress"
+    stress_cols = [i for i, h in enumerate(headers) if not h.startswith("MS")]
+    abs_vals = np.abs(arr.data[:, :, stress_cols])
+    values = np.max(abs_vals, axis=2)
     itime, ientry = np.unravel_index(np.argmax(values), values.shape)
-    return {
+    col_within = int(np.argmax(abs_vals[itime, ientry, :]))
+    governing_header = headers[stress_cols[col_within]]
+    component, end = _BAR_COLUMN_INFO.get(governing_header, (governing_header, None))
+
+    result = {
         quantity: float(values[itime, ientry]),
         "element_id": int(elem_ids[ientry]),
+        "component": component,
     }
+    if end is not None:
+        result["end"] = end
+    return result
 
 
 @mcp.tool()
@@ -349,12 +392,15 @@ def get_max_stress(op2_path: str) -> dict[str, Any]:
     across all subcases:
 
         {"cquad4": {"von_mises": ..., "element_id": ..., "subcase": ...},
-         "cbar": {"max_stress": ..., "element_id": ..., "subcase": ...},
+         "cbar": {"max_stress": ..., "element_id": ..., "subcase": ...,
+                  "component": "axial" | "bending" | "combined (axial + bending)",
+                  "end": "A" | "B"},  # "end" omitted for "axial" (no fixed end)
          ...}
 
     Element types not present in the OP2 are omitted. Plate-type elements
     (CQUAD4, CTRIA3, ...) report "von_mises"; bar-type elements (CBAR, ...)
-    report "max_stress" (peak direct axial+bending stress magnitude) -- these
+    report "max_stress" (peak direct axial+bending stress magnitude) plus
+    "component"/"end" identifying which specific column governed -- these
     are deliberately NOT combined into one blended "the max" number since
     they're different physical quantities, and silently comparing them could
     hide whichever one actually governs. See _peak_for_result's docstring for

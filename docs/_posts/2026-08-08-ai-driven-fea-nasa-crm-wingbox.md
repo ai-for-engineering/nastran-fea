@@ -251,16 +251,32 @@ cleanly. Peak stresses, per element type (deliberately reported separately —
 bar direct stress and plate von Mises aren't the same physical quantity and
 shouldn't be blended into one number):
 
-| Element type | Peak stress | Element | Notes |
-|---|---|---|---|
-| CQUAD4 (skin/shear web) | 39,983.7 psi (von Mises) | 2854 | Governing plate stress |
-| CBAR (stringer/cap) | 32,980.1 psi (max direct) | 1559935 | |
-| CTRIA3 | 2,794.4 psi (von Mises) | 29402 | |
+| Element type | Peak stress | Component | Element | Notes |
+|---|---|---|---|---|
+| CQUAD4 (skin/shear web) | 39,983.7 psi (275.7 MPa) | von Mises | 2854 | Governing plate stress |
+| CBAR (stringer/cap) | 32,980.1 psi (227.4 MPa) | axial | 1559935 | See note below |
+| CTRIA3 | 2,794.4 psi (19.3 MPa) | von Mises | 29402 | |
 
-Tip displacement: **~159.7 in**, at node 9103 — a lot, but this is a
-semi-span research model under a design GVW load case, not a certified
-aircraft, so treat the absolute number as a sanity check on the pipeline
-rather than a design conclusion.
+The CBAR row's "Component" is worth being precise about, since "max
+direct stress" on its own doesn't say what it actually is.
+`get_max_stress` reports whichever of a bar's direct-stress columns
+(axial, bending at four cross-section recovery points, or the combined
+axial+bending extreme) has the largest magnitude, at whichever end (A or
+B) it occurs -- not a single fixed quantity. For this governing element,
+that turns out to be pure **axial** stress: every bending-stress column
+(`s1a`-`s4a`, `s1b`-`s4b`) is exactly zero in the solved F06, consistent
+with this model's stringers/caps behaving as pin-ended truss members
+under this load case rather than beams in bending. Axial stress has no
+"end" (it doesn't vary along a bar with no distributed axial load), which
+is why the table doesn't list one -- a different model, or a different
+governing element in this one, could just as easily land on bending at
+end A or B instead, and the tool reports that distinction rather than
+hiding it behind one blended number.
+
+Tip displacement: **~159.7 in (4,056.4 mm)**, at node 9103 — a lot, but
+this is a semi-span research model under a design GVW load case, not a
+certified aircraft, so treat the absolute number as a sanity check on the
+pipeline rather than a design conclusion.
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stress_iso.png" alt="Von Mises stress contour on the NASA CRM wingbox, camera aimed at the governing stress element" style="max-width:100%;">
 
@@ -275,24 +291,34 @@ potentially hidden behind other geometry.*
 
 The point of wrapping this in MCP tools is that the workflow becomes a
 conversation instead of a sequence of terminal commands. In practice, a
-session looks like:
+session breaks down into five steps.
+
+### Step 1: load and validate
 
 > **Me:** Load the CRM wingbox model and check it's valid.
 > **Claude:** *(calls `load_model`)* — parsed cleanly: 35,489 elements,
 > counts by type, no warnings.
->
+
+### Step 2: patch case control
+
 > **Me:** The case control section is missing SOL/CEND, patch it.
 > **Claude:** *(calls `patch_case_control`)* — rebuilt the header, preserved
 > the existing SPC/LOAD/STRESS requests, wrote the patched deck.
->
+
+### Step 3: solve
+
 > **Me:** Run it through MYSTRAN.
 > **Claude:** *(calls `run_solver`)* — solved successfully, no fatal errors
 > in the F06.
->
+
+### Step 4: extract peak stress
+
 > **Me:** What's the peak stress, and where?
 > **Claude:** *(calls `get_max_stress`)* — CQUAD4 governs at 39,983.7 psi
-> on element 2854, subcase 1.
->
+> (275.7 MPa) on element 2854, subcase 1.
+
+### Step 5: visualize and isolate
+
 > **Me:** Show me a stress contour, and isolate just the ribs so I can see
 > how they're loaded.
 > **Claude:** *(calls `render_model_view` with `isolate_groups=["RIBS"]`,
@@ -319,9 +345,9 @@ top, not just bare geometry:
 
 *The same isolated ribs, now colored by von Mises stress —
 `render_stress_contour(..., isolate_groups=["RIBS"])`. The governing
-element here (17,884 psi) is a genuinely different, rib-specific peak, not
-the model-wide one from the full view above. Getting this working reliably
-took a real fix, covered below.*
+element here (17,884 psi / 123.3 MPa) is a genuinely different,
+rib-specific peak, not the model-wide one from the full view above.
+Getting this working reliably took a real fix, covered next.*
 
 ## A real bug, and how it got fixed
 
@@ -362,23 +388,23 @@ all of this:
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_skin_lwr_stress.png" alt="Von Mises stress contour on the lower skin panel" style="max-width:100%;">
 
 *Lower skin (2,322 CQUAD4 elements) — this is where the model-wide peak
-actually lives: 39,983.7 psi on element 2854, the same number
+actually lives: 39,983.7 psi (275.7 MPa) on element 2854, the same number
 `get_max_stress` reported for the whole model back at the top of this
 post.*
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_skin_upr_stress.png" alt="Von Mises stress contour on the upper skin panel" style="max-width:100%;">
 
 *Upper skin (2,322 CQUAD4 elements) — a different, lower peak (38,947.6
-psi), with its own distinct hot spots.*
+psi / 268.5 MPa), with its own distinct hot spots.*
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_shearwebs_stress.png" alt="Von Mises stress contour on the shear webs" style="max-width:100%;">
 
-*Shear webs (8,880 elements) — peak 30,575.1 psi.*
+*Shear webs (8,880 elements) — peak 30,575.1 psi (210.8 MPa).*
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_spars_lete_stress.png" alt="Von Mises stress contour on the leading- and trailing-edge spars" style="max-width:100%;">
 
 *Leading- and trailing-edge spars (1,611 elements) — two distinct spar
-runs, each with its own stress pattern, peak 34,046.9 psi.*
+runs, each with its own stress pattern, peak 34,046.9 psi (234.7 MPa).*
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stiffeners_stress.png" alt="Isolated stiffener elements, uncolored since bars have no von Mises value" style="max-width:100%;">
 

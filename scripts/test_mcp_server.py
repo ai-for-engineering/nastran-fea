@@ -229,6 +229,50 @@ def test_get_max_stress_missing_file(tmp_path: Path):
         ms.get_max_stress(str(tmp_path / "does_not_exist.OP2"))
 
 
+class _FakeBarStressArray:
+    """Minimal stand-in for a pyNastran bar-stress result array -- just
+    enough of the .get_headers()/.data/.element interface _peak_for_result
+    actually uses, so its column-classification logic (_BAR_COLUMN_INFO) can
+    be unit-tested without a real MYSTRAN solve."""
+
+    def __init__(self, headers: list[str], row: list[float]):
+        import numpy as np
+
+        self._headers = headers
+        self.data = np.array([[row]])  # shape (1 time, 1 entry, n columns)
+        self.element = np.array([42])
+
+    def get_headers(self) -> list[str]:
+        return self._headers
+
+
+_CBAR_HEADERS = [
+    "s1a", "s2a", "s3a", "s4a", "axial", "smaxa", "smina", "MS_tension",
+    "s1b", "s2b", "s3b", "s4b", "smaxb", "sminb", "MS_compression",
+]
+
+
+def test_peak_for_result_reports_axial_component_with_no_end():
+    # All bending columns zero, pure axial load -- the sentinel MS columns
+    # (1e10) must not win despite being numerically larger.
+    row = [0, 0, 0, 0, 500.0, 500.0, 500.0, 1e10, 0, 0, 0, 0, 500.0, 500.0, 1e10]
+    peak = ms._peak_for_result(_FakeBarStressArray(_CBAR_HEADERS, row))
+    assert peak["max_stress"] == 500.0
+    assert peak["component"] == "axial"
+    assert "end" not in peak
+
+
+def test_peak_for_result_reports_combined_component_and_end_b():
+    # Bending-only columns (s1b-s4b) stay small; smaxb/sminb (the combined
+    # axial+bending extreme) are the unambiguous largest-magnitude columns,
+    # so those -- not a bending-only column -- must govern.
+    row = [10, 10, 10, 10, 50.0, 60, -40, 1e10, 20, 20, 20, 20, 900.0, -800.0, 1e10]
+    peak = ms._peak_for_result(_FakeBarStressArray(_CBAR_HEADERS, row))
+    assert peak["max_stress"] == 900.0
+    assert peak["component"] == "combined (axial + bending)"
+    assert peak["end"] == "B"
+
+
 @pytest.mark.skipif(
     not Path(DEFAULT_SOLVER_PATH).is_file(),
     reason=(
@@ -263,9 +307,13 @@ def test_get_max_stress_end_to_end(proper_bdf: Path):
 def test_get_max_stress_end_to_end_cbar(cbar_bdf: Path):
     """Solve a simple cantilever CBAR beam for real and check the bar-type
     branch: reports "max_stress" (not "von_mises", since bar direct stress
-    isn't the same physical quantity as plate von Mises), and doesn't get
+    isn't the same physical quantity as plate von Mises), doesn't get
     fooled by the large margin-of-safety sentinel values (~1e10) that
-    pyNastran fills in when a margin isn't computed."""
+    pyNastran fills in when a margin isn't computed, and correctly
+    identifies which column governed: this model is fixed at node 1 (end A)
+    with a pure transverse load at the free tip (node 2, end B) and no axial
+    load at all -- max bending moment on a cantilever is at the fixed end,
+    so the governing value must be bending at end A, not axial or end B."""
     solver_result = ms.run_solver(str(cbar_bdf))
     assert solver_result["success"], solver_result["errors"]
 
@@ -279,6 +327,8 @@ def test_get_max_stress_end_to_end_cbar(cbar_bdf: Path):
     # A real bending stress on a loaded cantilever, not a margin-of-safety
     # sentinel value (which would be ~1e10).
     assert 0 < cbar["max_stress"] < 1_000_000
+    assert cbar["component"] == "bending"
+    assert cbar["end"] == "A"
 
 
 # ---------------------------------------------------------------------------
