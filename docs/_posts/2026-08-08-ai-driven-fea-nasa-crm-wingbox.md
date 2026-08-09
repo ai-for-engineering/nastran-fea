@@ -129,6 +129,21 @@ were cross-checked directly against NASA's own
 
 MYSTRAN solves the patched "GVW" subcase cleanly.
 
+Every render from here on also carries a small caption stating which axis
+is span/chord/up, plus "root at left" wherever the camera guarantees it.
+Both are read off the geometry itself, not hardcoded per model: span is
+whichever axis has the largest bounding-box range, thickness the smallest,
+chord whatever's left; root is whichever end of the span axis has the
+bigger chord x thickness cross-section (a real wing tapers). The
+governing-element camera itself uses the same detection -- it picks
+whichever of {thickness, chord} the governing element's own outward normal
+aligns with more strongly as the dominant viewing axis (guaranteeing
+visibility) and rolls the camera so root always lands on the left. That
+replaces an earlier approach that aimed at one of 8 fixed isometric
+octants, weighting span equally with the other two axes -- which is
+exactly what let it occasionally rotate this long wing into an
+almost-vertical portrait view.
+
 #### Tip displacement
 
 Tip displacement: **~159.7 in (4,056 mm)** at node 9103, from
@@ -138,15 +153,17 @@ by nodal translational displacement magnitude instead of stress:
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_displacement_iso.png" alt="Displacement magnitude contour on the NASA CRM wingbox, showing smooth bending from root to tip" style="max-width:100%;">
 
 *Displacement magnitude contour — smooth, monotonic bending from the fixed
-root (blue, ~0 in) to the 159.7 in tip peak (orange, node 9103).*
+root (left, blue, ~0 in) to the 159.7 in tip peak (right, orange, node
+9103).*
 
 #### Stress contour
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stress_iso.png" alt="Von Mises stress contour on the NASA CRM wingbox, camera aimed at the governing stress element" style="max-width:100%;">
 
-*Von Mises stress contour via `render_stress_contour`. Camera auto-aims at
-the governing element's outward face normal, guaranteeing visibility rather
-than risking occlusion under a fixed preset.*
+*Von Mises stress contour via `render_stress_contour`. Camera aims at the
+governing element's outward face normal, guaranteeing visibility, while
+keeping span horizontal and root on the left instead of the portrait
+rotation a naive isometric-octant search can produce.*
 
 #### Peak stress by component
 

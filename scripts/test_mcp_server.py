@@ -607,26 +607,34 @@ def test_camera_look_direction_aims_at_governing_element(two_property_bdf: Path)
         two_property_bdf, Path(solver_result["op2_path"])
     )
     assert result is not None
-    focal_point, camera_position, view_up, legend_y = result
+    focal_point, camera_position, view_up, legend_y, orientation_caption = result
     assert legend_y in (0.56, 0.08)
 
-    # two_property_bdf's elements are flat in the XY plane (all grids have
-    # z=0), so their outward face normal is exactly +Z -- the camera should
-    # sit at one of the 8 isometric octants (equal-magnitude x/y/z offset
-    # from the focal point) whose Z component agrees in sign with that
-    # normal, i.e. it's actually facing the element rather than away from
-    # it. Which of the (here, tied) octants sharing that Z sign gets picked
-    # is an implementation-defined tiebreak, not a meaningful invariant, so
-    # this doesn't assert an exact direction.
+    # two_property_bdf's nodes span X in [0, 2], Y in [0, 1], Z always 0 --
+    # so span=X (largest range), thickness=Z (smallest, degenerate at 0),
+    # chord=Y. The elements are flat in the XY plane, so their outward
+    # normal is pure +-Z (thickness axis): the new natural-orientation
+    # camera should pick thickness as the PRIMARY viewing axis (dominant,
+    # sign-matched to the normal) and chord as the secondary tilt, with
+    # ZERO contribution from span -- unlike the old fixed 8-octant approach
+    # this replaced, which gave span equal weight and is what made a real
+    # published render (this model's tip displacement) look almost
+    # vertical. See the "Natural-orientation camera philosophy" comment
+    # above _natural_axes.
     import numpy as np
 
     offset = np.array(camera_position) - np.array(focal_point)
     direction = offset / np.linalg.norm(offset)
-    assert np.allclose(np.abs(direction), 1.0 / np.sqrt(3.0), atol=1e-6)
-    assert direction[2] > 0
+    assert direction[0] == pytest.approx(0.0, abs=1e-9)  # span (X): no contribution
+    assert direction[2] > 0  # thickness (Z): primary, sign-matched to the outward normal
+    assert abs(direction[2]) > abs(direction[1])  # thickness dominates chord (Y)
+    assert np.linalg.norm(direction) == pytest.approx(1.0, abs=1e-6)
 
     assert np.linalg.norm(view_up) == pytest.approx(1.0, abs=1e-6)
     assert np.dot(view_up, direction) == pytest.approx(0.0, abs=1e-6)
+    assert "span = X" in orientation_caption
+    assert "up = Z" in orientation_caption
+    assert "root at left" in orientation_caption
 
     from pyNastran.bdf.bdf import BDF
 
@@ -648,8 +656,9 @@ def test_camera_look_direction_fans_out_isolated_group(two_property_bdf: Path):
 
     result = ms._camera_look_direction_for_isolated_group(two_property_bdf, eids)
     assert result is not None
-    focal_point, camera_position, view_up, legend_y = result
+    focal_point, camera_position, view_up, legend_y, orientation_caption = result
     assert legend_y in (0.56, 0.08)
+    assert "root at left" in orientation_caption
 
     # Both CQUAD4s are flat in the XY plane (z=0), so their shared normal is
     # +-Z. A straight-on view (camera offset from focal point only in Z)
@@ -705,6 +714,125 @@ def test_legend_corner_y_defaults_to_top_right_when_ambiguous():
     points[:, 2] = 0.0
 
     assert ms._legend_corner_y(view_direction, up, points) == 0.56
+
+
+def _synthetic_tapered_wing(rng, n=400):
+    """A crude but genuinely tapered "wing" point cloud for testing the
+    natural-orientation helpers without needing a real BDF: span runs along
+    Y (0 to 100), chord and thickness both shrink linearly from root
+    (Y near 0, chord/thickness +-10) to tip (Y near 100, chord/thickness
+    +-1) -- root has a much bigger chord x thickness cross-section than
+    tip, same tapering property a real wing has."""
+    import numpy as np
+
+    y = rng.uniform(0.0, 100.0, size=n)
+    half_chord = 10.0 * (1.0 - y / 100.0) + 1.0
+    half_thickness = 10.0 * (1.0 - y / 100.0) + 1.0
+    x = rng.uniform(-1.0, 1.0, size=n) * half_chord
+    z = rng.uniform(-1.0, 1.0, size=n) * half_thickness
+    return np.column_stack([x, y, z])
+
+
+def test_natural_axes_identifies_span_chord_thickness():
+    """span = largest bounding-box range, thickness = smallest, chord =
+    whatever's left -- detected from geometry alone, not a hardcoded axis
+    assumption (see "Natural-orientation camera philosophy" above
+    _natural_axes)."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    points = _synthetic_tapered_wing(rng)
+    span_axis, chord_axis, thickness_axis = ms._natural_axes(points)
+    assert span_axis == 1  # Y: range 0-100, by far the largest
+    assert {chord_axis, thickness_axis} == {0, 2}  # X/Z, in either order
+
+
+def test_root_at_min_span_detects_wider_end():
+    """The root (bigger chord x thickness cross-section, per real aircraft
+    tapering) sits at Y near 0 in _synthetic_tapered_wing -- the MIN end of
+    the span axis."""
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    points = _synthetic_tapered_wing(rng)
+    span_axis, chord_axis, thickness_axis = ms._natural_axes(points)
+    assert ms._root_at_min_span(points, span_axis, chord_axis, thickness_axis) is True
+
+
+def test_root_at_min_span_false_when_root_is_at_the_max_end():
+    """Mirroring the span axis (Y -> 100 - Y) should flip root detection to
+    the MAX end -- confirms the heuristic tracks the actual cross-section,
+    not just "always pick the min"."""
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    points = _synthetic_tapered_wing(rng)
+    points = points.copy()
+    points[:, 1] = 100.0 - points[:, 1]
+    span_axis, chord_axis, thickness_axis = ms._natural_axes(points)
+    assert ms._root_at_min_span(points, span_axis, chord_axis, thickness_axis) is False
+
+
+def test_apply_root_left_roll_flips_up_when_root_would_be_on_the_right():
+    """Looking down -Z (view_direction=+Z, i.e. camera looking in the -Z
+    direction... here view_from_direction is world->camera, so use +Z) with
+    up=+Y makes screen-right = up x view_direction = Y x Z = X. If the root
+    (span axis Y's min end, per _synthetic_tapered_wing) sits at +X, it's on
+    the right of frame -- the roll must flip up to move it to the left."""
+    import numpy as np
+
+    rng = np.random.default_rng(2)
+    points = _synthetic_tapered_wing(rng)
+    # Shift every root-end (small Y) point to +X, every tip-end point to -X,
+    # so root unambiguously projects to screen-right before correction.
+    root_mask = points[:, 1] < 10.0
+    points = points.copy()
+    points[root_mask, 0] += 50.0
+    points[~root_mask, 0] -= 50.0
+
+    view_from_direction = np.array([0.0, 0.0, 1.0])
+    up = np.array([0.0, 1.0, 0.0])
+    right_before = np.cross(up, view_from_direction)
+    assert right_before[0] > 0  # sanity check: +X is indeed screen-right here
+
+    corrected_up = ms._apply_root_left_roll(
+        view_from_direction, up, points, span_axis=1, root_at_min=True
+    )
+    assert np.allclose(corrected_up, -up)
+
+    right_after = np.cross(corrected_up, view_from_direction)
+    root_centroid = points[root_mask].mean(axis=0)
+    tip_centroid = points[~root_mask].mean(axis=0)
+    assert np.dot(root_centroid - tip_centroid, right_after) < 0  # now on the left
+
+
+def test_apply_root_left_roll_leaves_up_unchanged_when_already_left():
+    """The mirror image of the flip test: root already on the left should
+    round-trip through unchanged."""
+    import numpy as np
+
+    rng = np.random.default_rng(2)
+    points = _synthetic_tapered_wing(rng)
+    root_mask = points[:, 1] < 10.0
+    points = points.copy()
+    points[root_mask, 0] -= 50.0
+    points[~root_mask, 0] += 50.0
+
+    view_from_direction = np.array([0.0, 0.0, 1.0])
+    up = np.array([0.0, 1.0, 0.0])
+
+    corrected_up = ms._apply_root_left_roll(
+        view_from_direction, up, points, span_axis=1, root_at_min=True
+    )
+    assert np.allclose(corrected_up, up)
+
+
+def test_axis_role_caption_includes_root_claim_only_when_asked():
+    caption = ms._axis_role_caption(1, 0, 2)
+    assert caption == "Axes: span = Y  |  chord = X  |  up = Z"
+
+    caption_with_root = ms._axis_role_caption(1, 0, 2, note_root_left=True)
+    assert caption_with_root == "Axes: span = Y  |  chord = X  |  up = Z  (root at left)"
 
 
 def test_camera_look_direction_isolated_group_no_plate_elements(
