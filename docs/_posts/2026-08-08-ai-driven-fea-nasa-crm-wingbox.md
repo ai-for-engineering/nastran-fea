@@ -254,7 +254,10 @@ How `isolate_groups` handles a resolved element set:
   reported as a specific message rather than attempted as a render.
 
 Every real (non-mass) group, each rendered with a correctly framed stress
-contour:
+contour. The flat panel groups below (skins, shear webs, spars) use
+`camera="planform"` -- the same NASA-report-style angle as the case-study
+overview, which reads cleanly for a single flat component isolated on its
+own:
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_skin_lwr_stress.png" alt="Von Mises stress contour on the lower skin panel" style="max-width:100%;">
 
@@ -279,12 +282,17 @@ element 2854.*
 *Stiffeners (14,134 CBAR) — colored by axial stress (`result="axial"`).
 Peak: 32,980.1 psi (227.4 MPa), element 1559935; the bipolar scale (min
 -31,611.7 psi) reflects axial stress carrying a sign (tension/compression),
-unlike von Mises.*
+unlike von Mises. This group keeps `camera="auto"` rather than
+`"planform"` -- a planform angle looks nearly straight down the length of
+these mostly-spanwise bars, collapsing them into an unreadable overlapping
+mess; `"auto"` fits the frame to the actual selection instead.*
 
 Every render above used the same `render_stress_contour` call, varying
-`isolate_groups` (and, for the all-bar Stiffeners group, `result="axial"`
-in place of the default `"von_mises"`). Per-component peak stresses (same
-`get_max_stress` call against each group's trimmed OP2) are tabulated in
+`isolate_groups`, `camera` (`"planform"` for the flat panels,
+`"auto"` for the all-bar Stiffeners group), and `result` (`"axial"` in
+place of the default `"von_mises"`, also for Stiffeners). Per-component
+peak stresses (same `get_max_stress` call against each group's trimmed
+OP2) are tabulated in
 Peak stress by component above.
 
 ## Honest caveats
