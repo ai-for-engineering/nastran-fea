@@ -100,26 +100,28 @@ cards (following LOAD combinations) and summarizes them per subcase.
 
 On the "GVW" subcase: 196 constrained nodes, 12,238 FORCE cards. Node and
 card counts don't say where on the structure they apply, so the coordinates
-were cross-checked directly:
+were cross-checked directly against NASA's own
+[wingbox FEM description](https://commonresearchmodel.larc.nasa.gov/wp-content/uploads/sites/7/2014/02/CRM_wingboxFEM_description_1.pdf):
 
 - **Boundary conditions (SPC set 2): root joint, two rib stations.** 140
   nodes at the symmetry-plane root rib (Y ≈ 0) are fixed in all three
   translations (DOF `123`). A further 56 nodes at a second rib ~120 in
   outboard (Y ≈ 120, full semi-span ≈ 1,151 in) are fixed in Z only (DOF
-  `3`). No rotational DOF is constrained anywhere — a shell/bar
-  idealization, not a literal built-in wall.
-- **Loads (LOAD set 3): distributed, not aerodynamic pressure.** All 12,238
-  FORCE cards carry the identical magnitude, 20.41 lbf (90.8 N), +Z
-  direction, one per grid point. Coverage is ~88-89% of nodes on every
-  named component alike — skins, ribs, shear webs, spars, stiffeners — not
-  concentrated on the skin the way a pressure load would be. Consistent
-  with a distributed, mass-proportional "GVW" load rather than a modeled
-  aerodynamic pressure distribution. Resultant: **249,777.6 lbf (1,111.0
-  kN)**, vertical, zero net moment.
-
-A ~250,000 lbf upward resultant is the right order of magnitude for a GVW
-static case — a stronger validity check than a clean solver exit code
-alone.
+  `3`). NASA's description documents exactly this: "simple cantilever at
+  the root with simulated pressure vessel attach lug fittings at
+  body-fairing intersections" — the two rib stations found here are that
+  cantilever root plus the attach-lug support point.
+- **Loads (LOAD set 3): the "GVW" static-strength sizing case.** NASA's
+  description defines GVW as gross vehicle weight (~500,000 lbm design
+  weight for this transport-category model) and this subcase as the
+  baseline static-strength check: a "conservative uniform SLD (spanwise
+  load distribution)" applied at a gross vehicle weight of 500 kips, Mach
+  0.85, FL350. All 12,238 FORCE cards carry the identical magnitude, 20.41
+  lbf (90.8 N), +Z direction, one per grid point, spread uniformly across
+  every named component — skins, ribs, shear webs, spars, stiffeners.
+  Resultant: **249,777.6 lbf (1,111.0 kN)**, vertical, zero net moment —
+  roughly half the 500-kip GVW criterion, consistent with a semi-span model
+  carrying one wing's share of the aircraft's weight.
 
 ### Results
 
@@ -127,19 +129,14 @@ MYSTRAN solves the patched "GVW" subcase cleanly.
 
 #### Tip displacement
 
-Tip displacement: **~159.7 in (4,056 mm)** at node 9103. Large in absolute
-terms, but this is a semi-span research model under a design GVW case, not
-a certified aircraft — a pipeline sanity check, not a design conclusion.
-
-`render_stress_contour`'s `result` parameter also accepts `"displacement"`,
-coloring by nodal translational displacement magnitude:
+Tip displacement: **~159.7 in (4,056 mm)** at node 9103, from
+`render_stress_contour`'s `result="displacement"` parameter, which colors
+by nodal translational displacement magnitude instead of stress:
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_displacement_iso.png" alt="Displacement magnitude contour on the NASA CRM wingbox, showing smooth bending from root to tip" style="max-width:100%;">
 
 *Displacement magnitude contour — smooth, monotonic bending from the fixed
-root (blue, ~0 in) to the 159.7 in tip peak (orange, node 9103). No local
-kinks or discontinuities: a modeling error (unintended pin joint, missing
-constraint) typically shows up here before it shows up as a wrong number.*
+root (blue, ~0 in) to the 159.7 in tip peak (orange, node 9103).*
 
 #### Stress contour
 
@@ -243,10 +240,13 @@ How `isolate_groups` handles a resolved element set:
 - **Geometry and results are trimmed together.** Isolating for
   `render_stress_contour` trims the OP2 to the same element subset before
   pyNastranGUI loads it, so geometry and results match in size.
-- **Bar elements get no von Mises fringe.** CBARs have no per-element von
-  Mises value. The tool checks for a genuine plate von Mises result before
-  attempting a fringe and skips it otherwise (e.g. `Stiffeners`, 14,134
-  CBAR).
+- **Bar elements fringe by axial stress, not von Mises.** CBARs have no
+  per-element von Mises value, but `result="axial"` colors by their real
+  per-element axial-stress result instead (e.g. `Stiffeners`, 14,134 CBAR).
+  pyNastranGUI already computes and stores this value; it's just not
+  exposed under a descriptive case name the way von Mises or displacement
+  are, so selecting it means matching the case's own method label
+  ("Stress XX") rather than a resname substring search.
 - **Non-element groups are flagged explicitly.** `LUMPED_MASS` is `CONM2`
   mass points, not elements. Isolating it resolves to zero elements,
   reported as a specific message rather than attempted as a render.
@@ -272,21 +272,18 @@ element 2854.*
 *Leading- and trailing-edge spars (1,611 elements) — peak 34,046.9 psi
 (234.7 MPa).*
 
-<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stiffeners_stress.png" alt="Isolated stiffener elements, uncolored since bars have no von Mises value" style="max-width:100%;">
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_stiffeners_stress.png" alt="Axial stress contour on the isolated stiffener elements" style="max-width:100%;">
 
-*Stiffeners (14,134 CBAR) — no fringe: bars have no von Mises value (see
-`max_stress` vs `von_mises` in `get_max_stress`). Geometry only.*
+*Stiffeners (14,134 CBAR) — colored by axial stress (`result="axial"`).
+Peak: 32,980.1 psi (227.4 MPa), element 1559935; the bipolar scale (min
+-31,611.7 psi) reflects axial stress carrying a sign (tension/compression),
+unlike von Mises.*
 
-Governing stiffener stress (element 1559935, 32,980.1 psi axial) is covered
-in the Peak stress by component table above; no per-element fringe is
-rendered for CBAR values since pyNastranGUI's bar fringing is a
-GUI-synthesized approximation, not a direct read of the axial-stress
-column.
-
-Every render above used the same tool call, varying only the
-`isolate_groups` name. Per-component peak stresses (same `get_max_stress`
-call against each group's trimmed OP2) are tabulated in Peak stress by
-component above.
+Every render above used the same `render_stress_contour` call, varying
+`isolate_groups` (and, for the all-bar Stiffeners group, `result="axial"`
+in place of the default `"von_mises"`). Per-component peak stresses (same
+`get_max_stress` call against each group's trimmed OP2) are tabulated in
+Peak stress by component above.
 
 ## Honest caveats
 

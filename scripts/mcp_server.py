@@ -686,9 +686,20 @@ _DEFAULT_RENDER_TIMEOUT_S = 300
 # "displacement") deliberately excludes the rotational displacement case --
 # both names contain "displacement", only the translational one has a "T"
 # right after it once spaces/underscores are stripped.
+#
+# "axial" is a sentinel, not a substring: bar-stress cases aren't keyed by
+# a descriptive resname string the way plate von Mises / displacement cases
+# are -- self.result_cases stores them as (itime, imethod, header) tuples
+# (confirmed by inspecting self.result_cases the same way), so there's
+# nothing to substring-match. _build_postscript special-cases this sentinel
+# to instead look up the SimpleTableResults object's own .methods list and
+# select whichever case has methods[imethod] == "Stress XX" -- pyNastran's
+# label (RealBarStressArray.get_headers()) for the real per-element CBAR
+# axial-stress column, confirmed at index 4 of its 15-column header layout.
 _FRINGE_RESULT_MATCH = {
     "von_mises": "vonmises",
     "displacement": "displacementt",
+    "axial": "__bar_axial__",
 }
 
 # pyNastranGUI's default main-window render size on this setup, confirmed
@@ -1272,6 +1283,17 @@ def _build_postscript(
     back to the caller. Falls back to whatever pyNastranGUI displays by
     default (e.g. for a bar-only model with no plate von Mises result) if
     no matching case is found.
+
+    fringe_match == "__bar_axial__" (result="axial") takes a different path
+    entirely: bar-stress result cases aren't keyed by a descriptive resname
+    string to substring-match against -- self.result_cases stores them as
+    (itime, imethod, header) tuples, with the actual method label sitting on
+    the case's own SimpleTableResults object (`.methods[imethod]`). So this
+    mode walks self.result_cases looking for an object with a `.methods`
+    list whose entry at the case's own imethod is "Stress XX" -- pyNastran's
+    label for the real per-element CBAR axial-stress column (confirmed via
+    RealBarStressArray.get_headers(), index 4 of 15) -- rather than
+    string-matching the case name itself.
     """
     output_png_repr = repr(str(output_png))
     fringe_flag_repr = repr(str(output_png) + ".fringe_set")
@@ -1355,7 +1377,26 @@ self.geometry_actors['main'].GetProperty().SetColor(0.55, 0.55, 0.6)
 """
 
     fringe_block = ""
-    if want_stress_fringe:
+    if want_stress_fringe and fringe_match == "__bar_axial__":
+        fringe_block = f"""
+_fringe_set = False
+for _key, _val in self.result_cases.items():
+    try:
+        _obj, (_i, _name) = _val
+    except Exception:
+        continue
+    _methods = getattr(_obj, "methods", None)
+    if _methods is None or not isinstance(_name, tuple) or len(_name) != 3:
+        continue
+    _itime, _imethod, _header = _name
+    if 0 <= _imethod < len(_methods) and _methods[_imethod] == "Stress XX":
+        self.on_fringe(_key)
+        _fringe_set = True
+        break
+with open({fringe_flag_repr}, "w") as _f:
+    _f.write("1" if _fringe_set else "0")
+"""
+    elif want_stress_fringe:
         fringe_block = f"""
 _fringe_set = False
 for _key, _val in self.result_cases.items():
@@ -1509,14 +1550,15 @@ def _render(
     hidden_eids = _resolve_hidden_eids(
         in_path, hide_groups, hide_property_ids, isolate_groups, isolate_property_ids, ses_path
     )
-    if hidden_eids and result != "von_mises" and resolved_op2_path is not None:
+    if hidden_eids and result == "displacement" and resolved_op2_path is not None:
         # _write_filtered_op2 (below) drops displacement/velocity/etc.
         # result categories entirely -- it only ever trims and keeps stress
-        # tables, since that's all a von Mises fringe needs. A displacement
-        # fringe combined with hide_*/isolate_* would silently find nothing
-        # to show (fringe_set=False) rather than erroring, which is worse
-        # than just saying so up front: this combination isn't supported
-        # yet, so ask for the untrimmed model instead of guessing.
+        # tables, since that's all a von Mises or axial fringe needs. A
+        # displacement fringe combined with hide_*/isolate_* would silently
+        # find nothing to show (fringe_set=False) rather than erroring,
+        # which is worse than just saying so up front: this combination
+        # isn't supported yet, so ask for the untrimmed model instead of
+        # guessing.
         raise ValueError(
             f"result={result!r} with hide_groups/hide_property_ids/"
             "isolate_groups/isolate_property_ids isn't supported yet -- "
@@ -1575,6 +1617,22 @@ def _render(
                 except ValueError:
                     peaks = {}
                 want_stress_fringe = any("von_mises" in peak for peak in peaks.values())
+        elif result == "axial":
+            # Mirrors the von_mises branch: only attempt the fringe if a
+            # genuine bar direct-stress result (get_max_stress's
+            # "max_stress", the same one CBAR governs under) is actually
+            # present. Unlike the von_mises pseudo-case, there's no known
+            # hang risk here -- this selects a real per-element case
+            # (RealBarStressArray's own "axial" column), not a GUI-
+            # synthesized one -- but skipping a doomed search on a plate-only
+            # selection (no CBARs at all) costs nothing either.
+            want_stress_fringe = False
+            if render_op2_path is not None:
+                try:
+                    peaks = get_max_stress(str(render_op2_path))
+                except ValueError:
+                    peaks = {}
+                want_stress_fringe = any("max_stress" in peak for peak in peaks.values())
         else:
             # Displacement is a genuine nodal result already in the OP2
             # (whenever the case control requested it), not something
@@ -1729,13 +1787,31 @@ def render_stress_contour(
     result: str = "von_mises",
 ) -> dict[str, Any]:
     """Same as render_model_view, but also loads op2_path and colors the
-    view by a result -- "von_mises" (default) or "displacement" (nodal
-    translational displacement magnitude, T_XYZ; rotational displacement
-    isn't exposed here). The result dict includes "fringe_set": True if a
-    matching result case was found and applied, False if the OP2 has no
-    such case (e.g. a bar-only model with result="von_mises" -- see
+    view by a result -- "von_mises" (default, plate elements only),
+    "displacement" (nodal translational displacement magnitude, T_XYZ;
+    rotational displacement isn't exposed here), or "axial" (bar elements
+    only -- CBAR's real per-element axial direct stress, RealBarStressArray's
+    own "axial" column, NOT the GUI-synthesized pseudo-vonMises case bars
+    get lumped into under result="von_mises"). The result dict includes
+    "fringe_set": True if a matching result case was found and applied,
+    False if the OP2 has no such case (e.g. result="von_mises" against a
+    bar-only model, or result="axial" against a plate-only one -- see
     get_max_stress's "max_stress" vs "von_mises" distinction) and
     pyNastranGUI's default coloring was left in place instead.
+
+    result="axial" is what actually colors an all-CBAR selection (e.g.
+    isolate_groups=["Stiffeners"]) by stress instead of leaving it as bare
+    geometry: CBARs have no von Mises value, but they do have a genuine
+    per-element axial stress, and pyNastranGUI already computes and stores
+    it as a real result case -- it's just not exposed under a descriptive
+    name the way plate von Mises or displacement are (self.result_cases
+    keys bar-stress cases by an (itime, imethod, header) tuple rather than
+    a string), so finding it means matching the case object's own
+    .methods[imethod] == "Stress XX" instead of substring-matching the case
+    name (see _build_postscript's "__bar_axial__" branch). Supports
+    hide_*/isolate_* like von_mises does (it's a stress-table result, kept
+    by the same OP2 trimming) -- only result="displacement" is restricted
+    to the untrimmed model.
 
     result="displacement" doesn't support hide_groups/hide_property_ids/
     isolate_groups/isolate_property_ids (raises if combined) -- the OP2
