@@ -30,6 +30,13 @@ Tools:
         max_stress -- these are different physical quantities, deliberately
         not blended into one number) across all subcases.
 
+    describe_loads_and_boundary_conditions(bdf_path)
+        Parse a BDF's SPC/SPC1 (following SPCADD) and FORCE/MOMENT/...
+        (following LOAD combinations) and summarize what's actually
+        constraining and loading the model, per subcase -- constrained node/
+        DOF counts and a resultant force/moment vector, so a caller can
+        sanity-check a model's BCs and loads before trusting a stress result.
+
     render_model_view(bdf_path, output_png, ...)
     render_stress_contour(bdf_path, op2_path, output_png, ...)
         Render a screenshot of the model (plain geometry, or colored by von
@@ -395,6 +402,219 @@ def get_max_stress(op2_path: str) -> dict[str, Any]:
         raise ValueError(f"No stress results found in {path}")
 
     return peaks
+
+
+# ---------------------------------------------------------------------------
+# describe_loads_and_boundary_conditions
+# ---------------------------------------------------------------------------
+
+def _spc_entries(card: Any) -> list[tuple[int, str]]:
+    """(node_id, component_string) pairs for one SPC/SPC1 card. SPC stores
+    one component string per node (parallel lists, e.g. two constraints on
+    one line); SPC1 stores a single component string shared by every node
+    listed on the card."""
+    if card.type == "SPC1":
+        return [(node, str(card.components)) for node in card.nodes]
+    return [(node, str(comp)) for node, comp in zip(card.nodes, card.components)]
+
+
+def _resolve_constraint_set(
+    model: Any, set_id: int, seen: set[int] | None = None
+) -> list[tuple[int, str]]:
+    """Flatten an SPC set id to its (node_id, component) pairs, following
+    SPCADD combinations (which reference other set ids, not nodes directly)
+    recursively. `seen` guards a malformed deck with a circular SPCADD.
+
+    pyNastran files SPCADD cards in their own `model.spcadds` dict, separate
+    from `model.spcs` (SPC/SPC1) -- both are keyed by set id, so both need
+    checking here."""
+    if seen is None:
+        seen = set()
+    if set_id in seen:
+        return []
+    seen.add(set_id)
+
+    entries: list[tuple[int, str]] = []
+    for card in model.spcs.get(set_id, []):
+        entries.extend(_spc_entries(card))
+    for card in model.spcadds.get(set_id, []):
+        for sub_id in card.sets:
+            entries.extend(_resolve_constraint_set(model, sub_id, seen))
+    return entries
+
+
+def _summarize_constraints(entries: list[tuple[int, str]]) -> dict[str, Any]:
+    from collections import Counter
+
+    by_component = Counter(comp for _node, comp in entries)
+    node_ids = sorted({node for node, _comp in entries})
+    return {
+        "constrained_nodes": len(node_ids),
+        "by_component": dict(sorted(by_component.items())),
+        "sample_node_ids": node_ids[:10],
+    }
+
+
+def _resolve_load_set(
+    model: Any, set_id: int, scale: float = 1.0, seen: set[int] | None = None
+) -> list[tuple[float, Any]]:
+    """Flatten a LOAD set id to its (effective_scale, card) pairs, following
+    LOAD combination cards (an overall scale times a per-referenced-set
+    scale factor) recursively -- mirrors _resolve_constraint_set's SPCADD
+    handling on the load side. `seen` guards a circular LOAD reference.
+
+    pyNastran files LOAD combination cards in their own
+    `model.load_combinations` dict, separate from `model.loads`
+    (FORCE/MOMENT/...) -- both are keyed by set id, so both need checking."""
+    if seen is None:
+        seen = set()
+    if set_id in seen:
+        return []
+    seen.add(set_id)
+
+    out: list[tuple[float, Any]] = []
+    for card in model.loads.get(set_id, []):
+        out.append((scale, card))
+    for card in model.load_combinations.get(set_id, []):
+        for sub_scale, sub_id in zip(card.scale_factors, card.load_ids):
+            out.extend(
+                _resolve_load_set(model, sub_id, scale * card.scale * sub_scale, seen)
+            )
+    return out
+
+
+_FORCE_TYPES = {"FORCE", "FORCE1", "FORCE2"}
+_MOMENT_TYPES = {"MOMENT", "MOMENT1", "MOMENT2"}
+
+
+def _summarize_loads(resolved: list[tuple[float, Any]]) -> dict[str, Any]:
+    """Summarize resolved (scale, card) pairs: counts by card type, plus a
+    resultant force/moment vector and magnitude range for FORCE*/MOMENT*
+    cards (global-frame xyz*mag, scaled). Other load types actually seen in
+    the wild (PLOAD* pressure loads, GRAV) need element geometry or a mass
+    distribution this tool doesn't load, so they're counted in "by_type" but
+    deliberately left out of the resultant rather than silently guessed at.
+    """
+    import numpy as np
+    from collections import Counter
+
+    by_type = Counter(card.type for _scale, card in resolved)
+    force_vecs: list[Any] = []
+    moment_vecs: list[Any] = []
+    non_global_cid = False
+    unresolved_types: set[str] = set()
+
+    for scale, card in resolved:
+        if card.type in _FORCE_TYPES or card.type in _MOMENT_TYPES:
+            if getattr(card, "cid", 0) not in (0, None):
+                non_global_cid = True
+            vec = scale * card.mag * np.asarray(card.xyz, dtype=float)
+            (force_vecs if card.type in _FORCE_TYPES else moment_vecs).append(vec)
+        else:
+            unresolved_types.add(card.type)
+
+    result: dict[str, Any] = {
+        "load_cards": len(resolved),
+        "by_type": dict(sorted(by_type.items())),
+    }
+    if force_vecs:
+        arr = np.array(force_vecs)
+        result["force_resultant_xyz"] = arr.sum(axis=0).tolist()
+        result["force_magnitude_range"] = [
+            float(np.linalg.norm(arr, axis=1).min()),
+            float(np.linalg.norm(arr, axis=1).max()),
+        ]
+    if moment_vecs:
+        result["moment_resultant_xyz"] = np.array(moment_vecs).sum(axis=0).tolist()
+
+    notes: list[str] = []
+    if unresolved_types:
+        result["unresolved_types"] = sorted(unresolved_types)
+        notes.append(
+            "types in unresolved_types are counted but not vector-summed into "
+            "the resultant -- they need element geometry (PLOAD*) or a mass "
+            "distribution (GRAV) this tool doesn't load"
+        )
+    if non_global_cid:
+        notes.append(
+            "some FORCE/MOMENT cards use a non-global coordinate system "
+            "(cid != 0); the resultant sums their raw xyz vectors without "
+            "transforming to global, so treat it as approximate"
+        )
+    if notes:
+        result["notes"] = notes
+    return result
+
+
+@mcp.tool()
+def describe_loads_and_boundary_conditions(bdf_path: str) -> dict[str, Any]:
+    """Parse bdf_path and explain, in engineering terms, what's actually
+    constraining and loading the model -- the thing a stress engineer wants
+    to know before trusting any downstream stress result.
+
+    Reads SPC/SPC1 (following SPCADD combinations) for boundary conditions
+    and FORCE/MOMENT/FORCE1/FORCE2/MOMENT1/MOMENT2 (following LOAD
+    combinations) for loads, grouped by subcase using whatever SPC/LOAD case
+    control requests are present. Returns:
+
+        {"subcases": {"<subcase_id>": {
+            "label": ... | None,
+            "boundary_conditions": {"set_id": 2, "constrained_nodes": 196,
+                                     "by_component": {"3": 56, "123": 140},
+                                     "sample_node_ids": [...]} | None,
+            "loads": {"set_id": 3, "load_cards": 12238,
+                      "by_type": {"FORCE": 12238},
+                      "force_resultant_xyz": [0.0, 0.0, 249777.6],
+                      "force_magnitude_range": [20.41, 20.41]} | None,
+        }, ...}}
+
+    A subcase missing an SPC or LOAD request entirely (e.g. a modes-only
+    subcase) reports None for that half rather than omitting the key, so a
+    caller can tell "not requested" apart from "requested but empty".
+
+    MPC is deliberately not handled yet -- not exercised by the NASA CRM
+    wingbox validation case (see README); would need the same
+    resolve-then-summarize treatment as SPC if a case study needs it.
+    """
+    from pyNastran.bdf.bdf import BDF
+
+    path = Path(bdf_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"BDF file not found: {path}")
+    if not os.access(path, os.R_OK):
+        raise PermissionError(f"BDF file is not readable: {path}")
+
+    model = BDF(debug=False)
+    model.read_bdf(str(path), xref=False)
+
+    subcases: dict[str, Any] = {}
+    for subcase_id, subcase in model.subcases.items():
+        params = subcase.params
+        label = None
+        for key in ("LABEL", "SUBTITLE"):
+            if key in params:
+                label = params[key][0]
+                break
+
+        bc_summary = None
+        if "SPC" in params:
+            spc_set_id = params["SPC"][0]
+            entries = _resolve_constraint_set(model, spc_set_id)
+            bc_summary = {"set_id": spc_set_id, **_summarize_constraints(entries)}
+
+        load_summary = None
+        if "LOAD" in params:
+            load_set_id = params["LOAD"][0]
+            resolved = _resolve_load_set(model, load_set_id)
+            load_summary = {"set_id": load_set_id, **_summarize_loads(resolved)}
+
+        subcases[str(subcase_id)] = {
+            "label": label,
+            "boundary_conditions": bc_summary,
+            "loads": load_summary,
+        }
+
+    return {"bdf_path": str(path), "subcases": subcases}
 
 
 # ---------------------------------------------------------------------------

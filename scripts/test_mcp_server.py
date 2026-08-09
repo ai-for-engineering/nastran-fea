@@ -282,6 +282,143 @@ def test_get_max_stress_end_to_end_cbar(cbar_bdf: Path):
 
 
 # ---------------------------------------------------------------------------
+# describe_loads_and_boundary_conditions
+# ---------------------------------------------------------------------------
+
+# A single global-case-control deck (no SUBCASE cards -- pyNastran reports
+# this as subcase id 0) whose SPC/LOAD sets are combined via SPCADD/LOAD
+# rather than referenced directly, to exercise the recursive-resolution
+# path: SPCADD 20 combines SPC1 sets 2 (node 1, full 6-dof) and 3 (node 4,
+# dof 3 only); LOAD 30 combines FORCE sets 3 and 31 with an overall scale of
+# 1.0 and per-set scale factors 2.0/1.0.
+COMBINATION_BDF = """\
+SOL 101
+CEND
+ECHO = NONE
+SPC = 20
+LOAD = 30
+DISPLACEMENT = ALL
+STRESS = ALL
+BEGIN BULK
+GRID,1,,0.0,0.0,0.0
+GRID,2,,1.0,0.0,0.0
+GRID,3,,1.0,1.0,0.0
+GRID,4,,0.0,1.0,0.0
+CQUAD4,1,1,1,2,3,4
+PSHELL,1,1,0.1
+MAT1,1,1.0E7,,0.3
+SPCADD,20,2,3
+SPC1,2,123456,1
+SPC1,3,3,4
+LOAD,30,1.0,2.0,3,1.0,31
+FORCE,3,2,,1.0,1.0,0.0,0.0
+FORCE,31,2,,1.0,0.0,0.0,1.0
+ENDDATA
+"""
+
+# Two real SUBCASE cards sharing the same SPC set, one of them (Modes) with
+# no LOAD request at all -- exercises the "requested vs not requested"
+# distinction (boundary_conditions/loads should be None, not an empty dict,
+# when a subcase doesn't ask for one) and the LABEL lookup.
+MULTI_SUBCASE_BDF = """\
+SOL 101
+CEND
+SUBCASE 1
+LABEL = Modes
+SPC = 2
+SUBCASE 2
+LABEL = GVW
+SPC = 2
+LOAD = 3
+BEGIN BULK
+GRID,1,,0.0,0.0,0.0
+GRID,2,,1.0,0.0,0.0
+GRID,3,,1.0,1.0,0.0
+GRID,4,,0.0,1.0,0.0
+CQUAD4,1,1,1,2,3,4
+PSHELL,1,1,0.1
+MAT1,1,1.0E7,,0.3
+SPC1,2,123456,1,4
+FORCE,3,2,,1.0,1.0,0.0,0.0
+ENDDATA
+"""
+
+
+@pytest.fixture
+def combination_bdf(tmp_path: Path) -> Path:
+    path = tmp_path / "combination.bdf"
+    path.write_text(COMBINATION_BDF)
+    return path
+
+
+@pytest.fixture
+def multi_subcase_bdf(tmp_path: Path) -> Path:
+    path = tmp_path / "multi_subcase.bdf"
+    path.write_text(MULTI_SUBCASE_BDF)
+    return path
+
+
+def test_describe_loads_and_boundary_conditions_missing_file(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        ms.describe_loads_and_boundary_conditions(str(tmp_path / "does_not_exist.bdf"))
+
+
+def test_describe_loads_and_boundary_conditions_proper_deck(proper_bdf: Path):
+    result = ms.describe_loads_and_boundary_conditions(str(proper_bdf))
+    subcase = result["subcases"]["0"]
+    assert subcase["boundary_conditions"] == {
+        "set_id": 2,
+        "constrained_nodes": 2,
+        "by_component": {"123456": 2},
+        "sample_node_ids": [1, 4],
+    }
+    assert subcase["loads"]["set_id"] == 3
+    assert subcase["loads"]["load_cards"] == 1
+    assert subcase["loads"]["by_type"] == {"FORCE": 1}
+    assert subcase["loads"]["force_resultant_xyz"] == [1.0, 0.0, 0.0]
+    assert subcase["loads"]["force_magnitude_range"] == [1.0, 1.0]
+
+
+def test_describe_loads_and_boundary_conditions_resolves_combinations(
+    combination_bdf: Path,
+):
+    """SPCADD/LOAD combination cards are filed by pyNastran in their own
+    model.spcadds/model.load_combinations dicts, separate from model.spcs/
+    model.loads -- this exercises that both get checked and that LOAD's
+    per-set scale factors are actually applied."""
+    result = ms.describe_loads_and_boundary_conditions(str(combination_bdf))
+    subcase = result["subcases"]["0"]
+
+    bc = subcase["boundary_conditions"]
+    assert bc["set_id"] == 20
+    assert bc["constrained_nodes"] == 2
+    assert bc["by_component"] == {"123456": 1, "3": 1}
+
+    loads = subcase["loads"]
+    assert loads["set_id"] == 30
+    assert loads["load_cards"] == 2
+    # FORCE 3 (mag 1, xyz (1,0,0)) scaled 2.0 + FORCE 31 (mag 1, xyz (0,0,1))
+    # scaled 1.0, overall LOAD scale 1.0 -> resultant (2, 0, 1).
+    assert loads["force_resultant_xyz"] == [2.0, 0.0, 1.0]
+    assert loads["force_magnitude_range"] == [1.0, 2.0]
+
+
+def test_describe_loads_and_boundary_conditions_per_subcase(multi_subcase_bdf: Path):
+    result = ms.describe_loads_and_boundary_conditions(str(multi_subcase_bdf))
+    subcases = result["subcases"]
+
+    modes = subcases["1"]
+    assert modes["label"] == "Modes"
+    assert modes["boundary_conditions"]["constrained_nodes"] == 2
+    assert modes["loads"] is None  # no LOAD request in this subcase
+
+    gvw = subcases["2"]
+    assert gvw["label"] == "GVW"
+    assert gvw["boundary_conditions"]["constrained_nodes"] == 2
+    assert gvw["loads"]["load_cards"] == 1
+
+
+# ---------------------------------------------------------------------------
 # render_model_view / render_stress_contour
 # ---------------------------------------------------------------------------
 

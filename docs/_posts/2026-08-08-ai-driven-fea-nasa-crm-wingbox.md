@@ -82,6 +82,39 @@ pipeline; it's a genuine capability gap in an open-source solver versus a
 commercial one, and it's exactly the kind of thing worth documenting rather
 than quietly working around by switching to a more convenient model.
 
+## What's actually being applied: loads and boundary conditions
+
+Before trusting any stress number, the first thing a stress engineer
+actually wants to know is what's constraining and loading the model --
+not just "it solved." So the pipeline has a tool for exactly that question:
+`describe_loads_and_boundary_conditions`, which reads a BDF's SPC/SPC1
+(following SPCADD combinations, if any) and FORCE/MOMENT-type cards
+(following LOAD combinations and their scale factors) and summarizes them
+per subcase, instead of leaving you to grep through thousands of bulk-data
+lines by hand.
+
+On the CRM wingbox's static "GVW" subcase, it reports:
+
+- **Boundary conditions (SPC set 2, 196 constrained nodes):** 140 nodes
+  fixed in all three translations (DOF `123`), 56 fixed in Z-translation
+  only (DOF `3`). No rotational DOF is constrained anywhere in the model --
+  consistent with a shell/bar idealization that doesn't rely on rotational
+  stiffness at its support nodes, rather than a literal built-in-cantilever
+  wall.
+- **Loads (LOAD set 3, 12,238 FORCE cards):** every single card carries the
+  identical magnitude, 20.41 lbf (90.8 N), applied in the +Z direction at a
+  different grid point -- a uniform nodal-load approximation of a
+  distributed pressure/inertia load rather than a handful of concentrated
+  point loads. Summed, the resultant is **249,777.6 lbf (1,111.0 kN)**,
+  purely vertical, zero net moment contribution from any single card's
+  direction.
+
+That last number is a good sanity check in its own right: a wing structure
+under a uniform upward load in the hundred-thousand-pound range is exactly
+the shape of load you'd expect from a "GVW" (gross weight) static case, and
+seeing it fall cleanly out of summing 12,238 individual FORCE cards is a
+much stronger confidence check than just watching MYSTRAN exit cleanly.
+
 ### Results
 
 With the case control patched, MYSTRAN solves the static "GVW" subcase
