@@ -1037,6 +1037,166 @@ def _legend_corner_y(view_direction, up, points) -> float:
     return 0.56 if top_right_count <= bottom_right_count else 0.08
 
 
+# ---------------------------------------------------------------------------
+# Natural-orientation camera philosophy
+#
+# The original approach here (still visible in git history) aimed every
+# governing-element camera at one of 8 canonical ISOMETRIC octants -- equal
+# angle to all three world axes. That's a reasonable default for a roughly
+# cube-like structure, but it actively fights a long, thin, swept wingbox:
+# treating span/chord/thickness symmetrically means the octant search
+# routinely gives span as much weight as the (far smaller) other two axes,
+# which is what made a real published render of this model's tip
+# displacement look almost vertical -- span foreshortened hard enough to
+# rotate the whole wing into portrait, wasting most of a landscape frame.
+# The isolated-group camera had a narrower version of the same issue: it's
+# tuned for its own fan-out problem, but neither camera had any concept of
+# a "natural" way to lay out an anisotropic structure, or any consistent
+# rule for which end of it should face left vs. right.
+#
+# The functions below give both cameras a shared, general answer instead of
+# a fixed-model-specific tuning:
+#
+# 1. Detect span/chord/thickness from the geometry itself (largest/
+#    smallest/remaining bounding-box range) rather than assuming which
+#    literal X/Y/Z axis is which -- works for any case study's coordinate
+#    choices, not just this one.
+# 2. Never let the view direction carry a span component -- span always
+#    projects fully into the frame's horizontal extent, unforeshortened,
+#    regardless of which element governs or which group is isolated.
+# 3. For a guaranteed-visible governing-element view, pick whichever of
+#    {thickness, chord} the element's own outward normal aligns with more
+#    strongly as the dominant viewing axis (sign-matched for visibility),
+#    with the other providing a fixed-angle tilt for depth cues -- this is
+#    the generalization of "planform" (mostly top, a bit of front) that
+#    also correctly falls back to a more "front"-like view if a spar or rib
+#    face ever governs instead of a skin panel.
+# 4. Detect which end of the span axis is the root (bigger chord x
+#    thickness cross-section, i.e. where a tapered structure is thickest
+#    and widest) from geometry alone, and roll the camera so root always
+#    lands on the left of frame -- a fixed, predictable convention a reader
+#    can rely on across every render in a case study, matching how a
+#    wing is drawn in a real engineering drawing.
+# ---------------------------------------------------------------------------
+
+_AXIS_LETTERS = ("X", "Y", "Z")
+
+
+def _natural_axes(all_coords: "np.ndarray") -> tuple[int, int, int]:
+    """(span_axis, chord_axis, thickness_axis) as indices into x/y/z (0/1/2),
+    detected from all_coords' own bounding-box ranges: span is the largest
+    range (a wing's span dominates chord, which dominates thickness), and
+    thickness is the smallest. Works from geometry alone, not a hardcoded
+    axis assumption, so it generalizes to a case study with a different
+    coordinate convention than this one.
+    """
+    ranges = all_coords.max(axis=0) - all_coords.min(axis=0)
+    span_axis = int(ranges.argmax())
+    thickness_axis = int(ranges.argmin())
+    chord_axis = 3 - span_axis - thickness_axis
+    return span_axis, chord_axis, thickness_axis
+
+
+def _span_end_masks(all_coords: "np.ndarray", span_axis: int, band_frac: float = 0.1):
+    """(near_min_mask, near_max_mask): boolean masks selecting the points
+    within band_frac of all_coords' extent at each end of span_axis --
+    shared by root detection and the root-left roll correction so both
+    agree on what "the root end" and "the tip end" actually mean.
+    """
+    span_vals = all_coords[:, span_axis]
+    span_min, span_max = span_vals.min(), span_vals.max()
+    band = (span_max - span_min) * band_frac
+    return span_vals <= span_min + band, span_vals >= span_max - band
+
+
+def _root_at_min_span(
+    all_coords: "np.ndarray", span_axis: int, chord_axis: int, thickness_axis: int
+) -> bool:
+    """True if the root sits at the MIN end of span_axis, False if at MAX.
+
+    Root is identified by cross-section, not by any boundary-condition data
+    (this runs from a bare BDF, before/without case control) -- a tapered
+    wing is both wider (chord) and thicker at the root than at the tip, so
+    the end with the larger chord x thickness footprint wins. Confirmed
+    against the real NASA CRM wingbox: root end footprint is roughly 3x the
+    tip end's.
+    """
+    near_min, near_max = _span_end_masks(all_coords, span_axis)
+
+    def _footprint(mask: "np.ndarray") -> float:
+        pts = all_coords[mask]
+        return float(pts[:, chord_axis].ptp() * pts[:, thickness_axis].ptp())
+
+    return _footprint(near_min) >= _footprint(near_max)
+
+
+def _apply_root_left_roll(
+    view_from_direction: "np.ndarray",
+    up: "np.ndarray",
+    all_coords: "np.ndarray",
+    span_axis: int,
+    root_at_min: bool,
+) -> "np.ndarray":
+    """Flip up (equivalently, screen-right = up x view_direction) if needed
+    so the root projects to the left of frame rather than the right.
+
+    _up_vector_for_best_frame_fit only searches a 180-degree range of roll
+    angles, since a view's projected aspect ratio is identical for a roll
+    and its 180-degree opposite (rolling further just swaps which of the
+    two aspect-equivalent orientations you land on) -- so it has no way to
+    prefer one over the other. That leftover ambiguity is exactly the
+    degree of freedom this resolves, using the one thing the aspect fit
+    can't see: which end of the model is actually the root.
+    """
+    import numpy as np
+
+    near_min, near_max = _span_end_masks(all_coords, span_axis)
+    root_mask = near_min if root_at_min else near_max
+    tip_mask = near_max if root_at_min else near_min
+    root_centroid = all_coords[root_mask].mean(axis=0)
+    tip_centroid = all_coords[tip_mask].mean(axis=0)
+
+    right = np.cross(up, view_from_direction)
+    if np.dot(root_centroid - tip_centroid, right) > 0:
+        return -up
+    return up
+
+
+def _axis_role_caption(
+    span_axis: int, chord_axis: int, thickness_axis: int, note_root_left: bool = False
+) -> str:
+    """Human-readable orientation string for _build_postscript's caption
+    text -- see that function's docstring for why this is a text overlay
+    rather than a 3D axis triad. note_root_left is only set True by the
+    custom-camera paths that actually apply _apply_root_left_roll -- a
+    fixed preset (iso/top/side/front/planform) hasn't earned that claim for
+    an arbitrary case study model, so it only gets the axis-role mapping.
+    """
+    caption = (
+        f"Axes: span = {_AXIS_LETTERS[span_axis]}"
+        f"  |  chord = {_AXIS_LETTERS[chord_axis]}"
+        f"  |  up = {_AXIS_LETTERS[thickness_axis]}"
+    )
+    if note_root_left:
+        caption += "  (root at left)"
+    return caption
+
+
+def _natural_axis_caption_for_bdf(bdf_path: Path) -> str:
+    """orientation_caption for a fixed camera preset (no governing element
+    or isolated group to derive one from) -- same axis detection, no
+    root-left claim since a fixed preset's roll isn't computed per-model.
+    """
+    import numpy as np
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF(debug=False)
+    model.read_bdf(str(bdf_path), xref=False)
+    all_coords = np.array([grid.get_position() for grid in model.nodes.values()])
+    span_axis, chord_axis, thickness_axis = _natural_axes(all_coords)
+    return _axis_role_caption(span_axis, chord_axis, thickness_axis)
+
+
 def _camera_look_direction_for_governing_element(
     bdf_path: Path, op2_path: Path
 ) -> tuple[
@@ -1044,27 +1204,34 @@ def _camera_look_direction_for_governing_element(
     tuple[float, float, float],
     tuple[float, float, float],
     float,
+    str,
 ] | None:
-    """Compute (focal_point, camera_position, view_up, legend_y) so a camera
-    looking through them views the model from whichever isometric octant
-    best faces the outward face normal of whichever plate element
-    (CQUAD4/CTRIA3) has the governing (highest) von Mises stress in
-    op2_path -- see get_max_stress for why plate vs. bar stress isn't
-    blended into one number. legend_y (see _legend_corner_y) is where
-    _build_postscript should place the scalar-bar legend so it doesn't
-    clash with the model.
+    """Compute (focal_point, camera_position, view_up, legend_y,
+    orientation_caption) so a camera looking through them guarantees the
+    outward face normal of whichever plate element (CQUAD4/CTRIA3) has the
+    governing (highest) von Mises stress in op2_path faces the camera, while
+    keeping the model in its natural orientation (span horizontal, root on
+    the left) -- see get_max_stress for why plate vs. bar stress isn't
+    blended into one number, and the "Natural-orientation camera philosophy"
+    comment above _natural_axes for the reasoning behind this replacing a
+    previous fixed 8-octant-isometric approach. legend_y (see
+    _legend_corner_y) is where _build_postscript should place the scalar-bar
+    legend so it doesn't clash with the model; orientation_caption (see
+    _axis_role_caption) is the text _build_postscript overlays so a reader
+    can tell which world axis is span/chord/up without guessing.
 
-    An isometric direction (equal angle to all three world axes) is a
-    standard engineering-drawing convention specifically because no single
-    axis is degenerate, so it can't collapse a flat panel edge-on the way a
-    "top"/"side" preset can. Rather than aiming continuously straight down
-    the governing element's own computed normal (this function's previous
-    approach), this picks whichever of the 8 canonical isometric octants
-    the element's normal points most toward (highest dot product) --
-    simpler, a more standard/recognizable view, and more robust to messy
-    per-element geometry (a slightly-off normal from a warped quad still
-    resolves to the same octant, rather than continuously skewing the
-    computed direction).
+    The view direction is built from exactly two of the model's three
+    natural axes: whichever of {thickness, chord} the governing element's
+    own outward normal aligns with more strongly becomes the dominant
+    viewing axis (sign-matched to the normal, guaranteeing the face is lit
+    toward the camera), and the other provides a fixed ~25-degree tilt for
+    depth cues (matching the "planform" preset's empirically-tuned feel).
+    span never contributes -- so unlike the old equal-weighted isometric
+    octant, span always projects fully into the frame instead of being
+    foreshortened toward vertical. This also degrades gracefully: a skin
+    panel governs -> a mostly-top/bottom view (the common case); a spar or
+    rib face ever governs instead -> a mostly-front/back view instead,
+    still guaranteed to face it, still with span horizontal.
 
     camera_position is placed far enough out (2x the model's bounding-box
     diagonal) that a subsequent vtkRenderer.ResetCamera() call -- which
@@ -1111,21 +1278,36 @@ def _camera_look_direction_for_governing_element(
     if np.dot(centroid - bbox_center, normal) < 0:
         normal = -normal
 
-    octant_directions = np.array(
-        [[sx, sy, sz] for sx in (1.0, -1.0) for sy in (1.0, -1.0) for sz in (1.0, -1.0)]
-    ) / np.sqrt(3.0)
-    view_from_direction = octant_directions[np.argmax(octant_directions @ normal)]
+    span_axis, chord_axis, thickness_axis = _natural_axes(all_coords)
+    if abs(normal[thickness_axis]) >= abs(normal[chord_axis]):
+        primary_axis, secondary_axis = thickness_axis, chord_axis
+    else:
+        primary_axis, secondary_axis = chord_axis, thickness_axis
+    primary_sign = 1.0 if normal[primary_axis] >= 0 else -1.0
+    secondary_sign = 1.0 if normal[secondary_axis] >= 0 else -1.0
+
+    tilt = np.radians(65.0)
+    view_from_direction = np.zeros(3)
+    view_from_direction[primary_axis] = primary_sign * np.sin(tilt)
+    view_from_direction[secondary_axis] = secondary_sign * np.cos(tilt)
+    view_from_direction /= np.linalg.norm(view_from_direction)
 
     diag = float(np.linalg.norm(bbox_max - bbox_min))
     camera_position = bbox_center + view_from_direction * diag * 2.0
     up = _up_vector_for_best_frame_fit(view_from_direction, all_coords)
+    root_at_min = _root_at_min_span(all_coords, span_axis, chord_axis, thickness_axis)
+    up = _apply_root_left_roll(view_from_direction, up, all_coords, span_axis, root_at_min)
     legend_y = _legend_corner_y(view_from_direction, up, all_coords)
+    orientation_caption = _axis_role_caption(
+        span_axis, chord_axis, thickness_axis, note_root_left=True
+    )
 
     return (
         (float(bbox_center[0]), float(bbox_center[1]), float(bbox_center[2])),
         (float(camera_position[0]), float(camera_position[1]), float(camera_position[2])),
         (float(up[0]), float(up[1]), float(up[2])),
         legend_y,
+        orientation_caption,
     )
 
 
@@ -1136,12 +1318,15 @@ def _camera_look_direction_for_isolated_group(
     tuple[float, float, float],
     tuple[float, float, float],
     float,
+    str,
 ] | None:
-    """Compute (focal_point, camera_position, view_up, legend_y) for
-    isolate_groups/isolate_property_ids views, tuned for the common case of
-    a group of roughly-parallel planar elements (ribs, spars, frames, ...).
-    legend_y (see _legend_corner_y) is where _build_postscript should place
-    the scalar-bar legend so it doesn't clash with the model.
+    """Compute (focal_point, camera_position, view_up, legend_y,
+    orientation_caption) for isolate_groups/isolate_property_ids views,
+    tuned for the common case of a group of roughly-parallel planar elements
+    (ribs, spars, frames, ...). legend_y (see _legend_corner_y) is where
+    _build_postscript should place the scalar-bar legend so it doesn't
+    clash with the model; orientation_caption (see _axis_role_caption) is
+    the text _build_postscript overlays for axis orientation.
 
     A view straight down the group's shared face normal perfectly overlaps
     every parallel element into one; a view perpendicular to it (what a
@@ -1169,6 +1354,14 @@ def _camera_look_direction_for_isolated_group(
     element to element -- naively averaging raw normals could otherwise
     cancel toward zero). Returns None if eids has no plate elements to
     compute a normal from (e.g. an isolated group of only CBARs).
+
+    The roll (view_up) is still fit to this group's own bounding box for a
+    tight frame, but which end lands on the left is decided from the FULL
+    model's geometry (root detection needs span-wide context a small
+    isolated subset -- e.g. just the tip-side stringers -- might not have
+    enough of on its own), so every render in a case study agrees on the
+    same root-left convention regardless of which subset is isolated. See
+    the "Natural-orientation camera philosophy" comment above _natural_axes.
     """
     import numpy as np
     from pyNastran.bdf.bdf import BDF
@@ -1220,6 +1413,15 @@ def _camera_look_direction_for_isolated_group(
 
     camera_position = bbox_center + view_from_direction * diag * 2.0
     up = _up_vector_for_best_frame_fit(view_from_direction, group_points)
+
+    all_coords = np.array([grid.get_position() for grid in model.nodes.values()])
+    span_axis, chord_axis, thickness_axis = _natural_axes(all_coords)
+    root_at_min = _root_at_min_span(all_coords, span_axis, chord_axis, thickness_axis)
+    up = _apply_root_left_roll(view_from_direction, up, all_coords, span_axis, root_at_min)
+    orientation_caption = _axis_role_caption(
+        span_axis, chord_axis, thickness_axis, note_root_left=True
+    )
+
     legend_y = _legend_corner_y(view_from_direction, up, group_points)
 
     return (
@@ -1227,6 +1429,7 @@ def _camera_look_direction_for_isolated_group(
         (float(camera_position[0]), float(camera_position[1]), float(camera_position[2])),
         (float(up[0]), float(up[1]), float(up[2])),
         legend_y,
+        orientation_caption,
     )
 
 
@@ -1241,6 +1444,7 @@ def _build_postscript(
     | None = None,
     legend_y: float = 0.56,
     fringe_match: str = "vonmises",
+    orientation_caption: str | None = None,
 ) -> str:
     """Build a pyNastranGUI postscript (see spikes/pynastrangui_screenshot_
     postscript.py and issue #8) that sets a camera preset, optionally
@@ -1324,7 +1528,18 @@ def _build_postscript(
     # box), so it must be hidden BEFORE any ResetCamera() call, not after --
     # confirmed by testing: hiding it afterward still let its off-to-the-side
     # bounds skew the auto-fit, pushing the actual model to one edge of the
-    # frame instead of filling it.
+    # frame instead of filling it. Two other approaches to show *some* axis
+    # indicator were tried and rejected: (1) leaving the corner triad widget
+    # itself visible (set_corner_axis_visiblity(True)) renders nothing in
+    # the final image -- confirmed by a real render with it enabled -- since
+    # on_take_screenshot's vtkRenderLargeImage captures self.rend directly,
+    # not the interactor-attached vtkOrientationMarkerWidget's own overlay
+    # renderer; (2) re-showing "Global XYZ" itself (even repositioned near
+    # the model, after ResetCamera) reintroduces the exact framing bug this
+    # code exists to avoid -- confirmed by a real render where doing so
+    # shrank the model to a small corner of the frame despite an unchanged
+    # zoom call. Both stay hidden; orientation_caption below is the actual
+    # fix (see _build_postscript's caption_block).
     axes_block = """\
 self.set_corner_axis_visiblity(False)
 if 'Global XYZ' in self.geometry_actors:
@@ -1430,6 +1645,29 @@ with open({fringe_flag_repr}, "w") as _f:
     _f.write("1" if _fringe_set else "0")
 """
 
+    # Text, not a 3D widget or actor -- see axes_block's comment for why the
+    # two actor/widget-based approaches that were tried didn't work. A plain
+    # vtkTextActor is a 2D screen-space overlay in the same renderer
+    # (self.rend) real corner-text/legend actors already use successfully,
+    # so it shows up in on_take_screenshot's capture with no framing side
+    # effects (confirmed: same output size/framing with and without it).
+    # Top-left, since every render style this module produces (fixed
+    # presets and both custom-camera modes) leaves it empty -- content runs
+    # diagonally from lower-left to upper-right, the corner Max/Min block
+    # already owns bottom-left, and the legend owns top-right.
+    caption_block = ""
+    if orientation_caption:
+        caption_block = f"""
+import vtk as _vtk_orient
+_orient_txt = _vtk_orient.vtkTextActor()
+_orient_txt.SetInput({orientation_caption!r})
+_orient_txt.GetTextProperty().SetFontSize(16)
+_orient_txt.GetTextProperty().SetColor(0.0, 0.0, 0.0)
+_orient_txt.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+_orient_txt.GetPositionCoordinate().SetValue(0.02, 0.94)
+self.rend.AddActor2D(_orient_txt)
+"""
+
     return f"""\
 {axes_block}
 {background_block}
@@ -1437,6 +1675,7 @@ with open({fringe_flag_repr}, "w") as _f:
 self.zoom({zoom})
 {fringe_block}
 {legend_block}
+{caption_block}
 self.on_take_screenshot({output_png_repr}, magnify=1, show_msg=False)
 
 import sys
@@ -1512,6 +1751,14 @@ def _render(
 
     custom_camera = None
     legend_y = 0.56
+    # Computed once, unconditionally, from the full original model -- a
+    # fixed preset (iso/top/side/front/planform) gets the plain axis-role
+    # mapping; a custom-camera path below (governing element or isolated
+    # group) overwrites this with the richer version that also states the
+    # root-left claim it actually engineered. See _build_postscript's
+    # caption_block and the "Natural-orientation camera philosophy" comment
+    # above _natural_axes.
+    orientation_caption = _natural_axis_caption_for_bdf(in_path)
     if camera == "auto":
         camera_result = None
         if is_isolating:
@@ -1542,6 +1789,7 @@ def _render(
             camera = "iso"
         else:
             custom_camera, legend_y = camera_result[:3], camera_result[3]
+            orientation_caption = camera_result[4]
 
     # A custom_camera (either "auto" mode) is a tight, deliberate framing --
     # it fits tighter by default than a generic preset so it actually fills
@@ -1669,6 +1917,7 @@ def _render(
                 custom_camera=custom_camera,
                 fringe_match=_FRINGE_RESULT_MATCH[result],
                 legend_y=legend_y,
+                orientation_caption=orientation_caption,
             )
         )
         fringe_flag_path = Path(str(out_png) + ".fringe_set")
