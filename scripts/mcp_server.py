@@ -843,14 +843,72 @@ def _write_filtered_bdf(bdf_path: Path, hidden_eids: set[int], output_path: Path
     within 180s (possibly hung, not just slow) on the full ~35k-element
     wingbox model. Rewriting the deck without the unwanted elements before
     the GUI ever loads it is simpler and avoids that entirely.
+
+    Also drops any GRID node no longer referenced by anything (element,
+    load, SPC, ...) via pyNastran's own remove_unused -- popping elements
+    alone leaves every original node in place (pyNastran's write_bdf
+    doesn't prune unreferenced GRIDs on its own), which isn't just wasted
+    bytes: those orphaned nodes' coordinates still show up in self.grid's
+    point cloud once loaded, silently pulling in the FULL original model's
+    footprint for anything that measures the loaded geometry's extent (see
+    _build_postscript's fit_block). Went unnoticed against the NASA CRM
+    wingbox case study because every isolated group tested there (ribs,
+    skin panels) happened to already span nearly the whole span-wise
+    length, so the inflated bounding box barely differed from the true
+    one -- confirmed as a real bug only when isolating a single small,
+    spatially localized panel from a *different* case study model, where
+    the true extent was a small fraction of the original and the render
+    came out tiny instead of filling the frame.
+
+    remove_unused (rather than a hand-rolled "prune nodes not referenced
+    by a remaining element") is what correctly keeps a node alive when
+    it's only referenced by a FORCE/SPC1/etc. card and no element -- a
+    first attempt that only checked element references pruned a node a
+    FORCE card still pointed at, leaving a dangling reference pyNastranGUI
+    couldn't load. It also needs the popped-element model round-tripped
+    through a write+re-read first: calling remove_unused directly against
+    a model that had elements popped via a raw dict .pop() hit a KeyError,
+    since pyNastran's internal id-tracking caches go stale when bulk data
+    dicts are mutated directly instead of through its own removal API --
+    re-reading a freshly-written copy rebuilds those caches consistently.
+
+    Loads, constraints, masses, and rigid elements are dropped entirely
+    first (rather than left for remove_unused to consider) -- confirmed
+    necessary against a real model with a broad symmetry SPC1 (~60 nodes
+    spread across the whole structure) plus CONM2 fuel masses and RBE2/
+    RBE3 rigid elements each touching hundreds more: remove_unused
+    correctly treats every node any of those reference as "in use" (it
+    has no way to know this copy will only ever be rendered, never
+    solved), which defeated pruning almost completely -- a supposedly
+    68-node isolated panel still came out with 1451 nodes attached. None
+    of these card types affect what actually gets drawn (pyNastranGUI
+    doesn't render SPC/load/mass/rigid symbols the way it renders
+    elements), so dropping them outright is safe for a render-only copy.
     """
     from pyNastran.bdf.bdf import BDF
+    from pyNastran.bdf.mesh_utils.remove_unused import remove_unused
 
     model = BDF()
     model.read_bdf(str(bdf_path), xref=False)
     for eid in hidden_eids:
         model.elements.pop(eid, None)
-    model.write_bdf(str(output_path), size=8, enddata=True)
+    for attr in (
+        "spcs", "spcadds", "loads", "load_combinations",
+        "masses", "mpcs", "mpcadds", "rigid_elements",
+    ):
+        getattr(model, attr).clear()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        elements_removed_path = Path(tmpdir) / "elements_removed.bdf"
+        model.write_bdf(str(elements_removed_path), size=8, enddata=True)
+
+        pruned_model = BDF()
+        pruned_model.read_bdf(str(elements_removed_path), xref=False)
+        remove_unused(
+            pruned_model, remove_nids=True, remove_cids=True, remove_pids=True,
+            remove_mids=True, remove_spcs=True, remove_mpcs=True,
+        )
+        pruned_model.write_bdf(str(output_path), size=8, enddata=True)
 
 
 def _write_filtered_op2(op2_path: Path, kept_eids: set[int], output_path: Path) -> None:
