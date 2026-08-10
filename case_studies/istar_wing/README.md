@@ -45,12 +45,46 @@ aluminum, CQUAD4+CTRIA3+CBEAM).
 ## Folder structure
 
 - `original/` -- exactly as downloaded, unmodified.
-- `derived/` -- produced by this project: `run_solver.py` against
+- `derived/istar_wing.{dat,OP2,F06,...}` -- `run_solver.py` against
   `ISTAR_Demo_Wing.bdf` directly (copied to `istar_wing.dat` first, per
   `run_solver`'s own staging convention -- see the main README), no
   case-control patching needed. Solves the model's own original SOL 103
   analysis exactly as its authors set it up -- no invented loads, since an
   eigenvalue analysis has none to invent.
+- `derived/istar_wing_static.{dat,OP2,...}` -- a second, separate solve:
+  the same geometry/mass/constraint, but with the case control swapped to
+  `SOL 101` (linear statics) and a single `FORCE` card added (50 N, +Z,
+  at GRID 10001). Unlike the modal run, this load is NOT from the original
+  authors -- the deck has no static load case at all (`FORCE`/`PLOAD*`
+  don't appear anywhere in it), since it was built purely for normal-modes
+  analysis. GRID 10001 was picked deliberately, not arbitrarily: it's the
+  independent node of an `RBE3` (`RBE3 10001 ... 1366 1380 ...`) the
+  original modelers already placed at the wingtip (Y=0.685, this model's
+  own span max) for load/sensor interpolation onto the surrounding tip
+  patch -- reusing the one point the model's own GVT-style setup already
+  intended for exactly this kind of concentrated load, rather than picking
+  a node ourselves. See the main blog post for results and a caveat about
+  the peak stress landing right at the load point.
+
+Reproducing the static run: `scripts/mcp_server.py`'s `get_max_stress`
+needed a real fix to handle this deck at all -- MYSTRAN's composite
+(PCOMP) plate stress table has one row per ply, indexed by
+`.element_layer` rather than `.element`/`.element_node` (neither
+attribute exists on that array), which raised `AttributeError` the first
+time this was tried. Fixed generically (any composite plate result, not
+just this one) in `_element_ids_for`.
+
+The static render also surfaced a second, unrelated real bug: this deck's
+`RBE2`/`RBE3` rigid elements, its own `CORD2R` coordinate systems, and its
+per-ply composite material orientations make pyNastranGUI create over a
+dozen extra decorative actors (`Coord 511`, `mcid ply=1` through `ply=20`,
+`rigid_lines`, `SPC=3`, `material coord`, ...) that neither the NASA CRM
+wingbox nor this model's own modal run ever had, and `_build_postscript`
+only ever hid one hardcoded actor name (`'Global XYZ'`). Left visible,
+they produced an unreadable render (oversized overlapping corner text, a
+badly mis-framed model). Fixed generically too: hide every
+`geometry_actors` entry except `'main'`, rather than hardcoding each
+newly-discovered name.
 
 ## MYSTRAN vs. real MSC Nastran: a genuine cross-check
 

@@ -264,6 +264,25 @@ _CBAR_HEADERS = [
 ]
 
 
+class _FakeCompositePlateStressArray:
+    """Minimal stand-in for RealCompositePlateStressArray -- has neither
+    `.element` nor `.element_node` (only `.element_layer`, one row per PLY,
+    column 0 = element id / column 1 = ply number), which is exactly what
+    made a real MYSTRAN run of a PCOMP/CQUAD4 model raise AttributeError
+    against the original _element_ids_for before it learned about this
+    case."""
+
+    def __init__(self, headers: list[str], element_layer: list[list[int]], data: list[list[float]]):
+        import numpy as np
+
+        self._headers = headers
+        self.element_layer = np.array(element_layer)
+        self.data = np.array([data])  # shape (1 time, n_rows, n_columns)
+
+    def get_headers(self) -> list[str]:
+        return self._headers
+
+
 def test_peak_for_result_reports_axial_component_with_no_end():
     # All bending columns zero, pure axial load -- the sentinel MS columns
     # (1e10) must not win despite being numerically larger.
@@ -283,6 +302,24 @@ def test_peak_for_result_reports_combined_component_and_end_b():
     assert peak["max_stress"] == 900.0
     assert peak["component"] == "combined (axial + bending)"
     assert peak["end"] == "B"
+
+
+def test_peak_for_result_composite_plate_reports_element_not_ply():
+    # Three rows: element 500's two plies, then element 501's one ply.
+    # Peak von_mises is on element 501's row (index 2) -- the reported
+    # element_id must be 501 (element_layer column 0), not row index 2 and
+    # not ply number 1 (element_layer column 1).
+    headers = ["o11", "o22", "t12", "t1z", "t2z", "angle", "major", "minor", "von_mises"]
+    element_layer = [[500, 1], [500, 2], [501, 1]]
+    data = [
+        [1, 1, 1, 1, 1, 0, 1, 1, 1000.0],
+        [2, 2, 2, 2, 2, 0, 2, 2, 2000.0],
+        [3, 3, 3, 3, 3, 0, 3, 3, 5000.0],
+    ]
+    arr = _FakeCompositePlateStressArray(headers, element_layer, data)
+    peak = ms._peak_for_result(arr)
+    assert peak["von_mises"] == 5000.0
+    assert peak["element_id"] == 501
 
 
 @pytest.mark.skipif(

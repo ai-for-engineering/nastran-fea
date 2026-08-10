@@ -67,6 +67,11 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   `"component"` (`"axial"`, `"bending"`, or `"combined (axial + bending)"`)
   and `"end"` (`"A"`/`"B"`, omitted for `"axial"` since it has no fixed
   end) -- `"max_stress"` alone doesn't say which of those it actually is.
+  Composite plates (PCOMP) report `von_mises` too, but from a stress table
+  keyed by `.element_layer` (one row per ply) rather than `.element`/
+  `.element_node` -- confirmed against a real MYSTRAN composite solve,
+  which raised `AttributeError` before this was handled; `"element_id"` is
+  still the real element, not the ply number.
 - `get_normal_modes(op2_path)` -- parses a `SOL 103` (normal modes) OP2
   and returns each extracted mode's number, frequency (Hz), and eigenvalue
   (rad²/s²). frequency_hz is computed as `sqrt(eigenvalue) / (2*pi)`

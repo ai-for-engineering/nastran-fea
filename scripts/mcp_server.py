@@ -297,9 +297,16 @@ def run_solver(
 # ---------------------------------------------------------------------------
 
 def _element_ids_for(arr: Any) -> Any:
-    """Bar-type results carry one row per element (`.element`); plate-type
-    results carry two rows per element -- one per shell fiber location --
-    indexed via `.element_node[:, 0]`."""
+    """Bar-type results carry one row per element (`.element`); isotropic
+    plate-type results carry two rows per element -- one per shell fiber
+    location -- indexed via `.element_node[:, 0]`; composite plate results
+    (PCOMP, e.g. RealCompositePlateStressArray) carry one row per PLY
+    instead, indexed via `.element_layer[:, 0]` (column 1 is the ply
+    number) -- confirmed against a real MYSTRAN run of a PCOMP/CQUAD4
+    model, which raised AttributeError on `.element` (that array has
+    neither `.element` nor `.element_node` at all)."""
+    if hasattr(arr, "element_layer"):
+        return arr.element_layer[:, 0]
     if hasattr(arr, "element_node"):
         return arr.element_node[:, 0]
     return arr.element
@@ -406,6 +413,14 @@ def get_max_stress(op2_path: str) -> dict[str, Any]:
     hide whichever one actually governs. See _peak_for_result's docstring for
     the per-type column handling (including the CBAR margin-of-safety
     sentinel-value gotcha).
+
+    Composite plates (PCOMP, e.g. "cquad4_composite") also report
+    "von_mises", but the peak is a single governing PLY's value, not a
+    whole-laminate quantity -- MYSTRAN's composite stress table has one row
+    per ply, indexed by `.element_layer` rather than `.element`/
+    `.element_node` (confirmed against a real solve; the array has neither
+    of the other two attributes at all). "element_id" is still the real
+    element ID (element_layer's first column), not the ply number.
 
     Iterates over whatever `*_stress` result containers are actually present
     on `op2.op2_results.stress` rather than hardcoding to specific element
@@ -1661,12 +1676,31 @@ def _build_postscript(
         # instead.
         axis_viewport = (0.83, 0.84, 0.99, 1.0)
 
+    # "Global XYZ" was the only extra actor any case study tested against
+    # this module had -- until a model with rigid elements (RBE2/RBE3), its
+    # own CORD2R coordinate systems, and per-ply composite material
+    # orientations (the DLR ISTAR wing's static run) turned out to add a
+    # dozen more: 'Coord 511'/'521'/etc (one per CORD2R), 'mcid ply=1'
+    # through 'mcid ply=20' (one per composite ply, presumably a fiber-
+    # direction glyph at every element), 'rigid_lines'/'rigid_dependent'/
+    # 'rigid_independent' (RBE2/RBE3 visualization), 'SPC=3' (a constraint
+    # symbol), 'material coord'/'element coord', and 'main_copy' --
+    # confirmed by dumping self.geometry_actors.keys() against that real
+    # render, which also showed the actual symptom: unreadable, oversized
+    # overlapping corner text and a badly mis-framed model. Hardcoding each
+    # name as discovered doesn't scale -- hide everything except the one
+    # key that's been stable across every case study tested (including
+    # this one): 'main', the actual FE mesh.
+    hide_actors_block = """\
+for _name, _actor in list(self.geometry_actors.items()):
+    if _name != 'main':
+        _actor.VisibilityOff()
+"""
+
     axes_block = f"""\
 self.set_corner_axis_visiblity(True)
 self.gui.corner_axis.SetViewport({axis_viewport[0]!r}, {axis_viewport[1]!r}, {axis_viewport[2]!r}, {axis_viewport[3]!r})
-if 'Global XYZ' in self.geometry_actors:
-    self.geometry_actors['Global XYZ'].VisibilityOff()
-"""
+{hide_actors_block}"""
 
     # pyNastranGUI's default is a dark gradient background -- set_background_
     # color_to_white is its own built-in helper (used for GIF export) that

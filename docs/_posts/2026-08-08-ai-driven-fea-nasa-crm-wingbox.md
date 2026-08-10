@@ -406,6 +406,51 @@ consistent with a coupled bending-torsion mode.*
 Hz" -- that's the same `mode_cycles` mislabeling mentioned above, actually
 radians/s. Use `get_normal_modes`'s own value, not the caption.)
 
+### A static run too
+
+The ISTAR deck ships only the normal-modes case above -- no `FORCE` or
+`PLOAD*` card anywhere in it. Running a static case meant adding one:
+`SOL 101`, the same `SPC`, and a single 50 N force in +Z at GRID 10001 --
+the independent node of an `RBE3` (`RBE3 10001 ... 1366 1380 ...`) the
+original modelers already placed at the wingtip (Y=0.685, this model's own
+span max) to interpolate a load or sensor reading onto the surrounding tip
+patch. Reusing that point rather than picking a node ourselves keeps the
+load at the one location the model's own GVT-style setup already intended
+for exactly this. The 50 N magnitude is our own choice, sized for a
+visible but not absurd deflection on a wing this small and this flexible
+(an aeroelastic-tailoring research wing, by design).
+
+Peak tip displacement: **45.2 mm** at GRID 10001 (6.6% of the 685 mm
+span) -- large, but this wing is intentionally very flexible, not a
+modeling error.
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/istar_wing_static_displacement.png" alt="Static displacement contour on the DLR ISTAR wing under a 50 N wingtip force" style="max-width:100%;">
+
+*Displacement magnitude, smooth and monotonic root to tip -- the expected
+shape for a cantilever under a tip load.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/istar_wing_static_stress.png" alt="Static von Mises stress contour on the DLR ISTAR wing under a 50 N wingtip force" style="max-width:100%;">
+
+*Von Mises stress, peak 85.8 MPa. The hot spot sits near Y ~ 0.47
+(~70% span) -- next to another `RBE3` interpolation patch, not at the
+physical root. Rigid-element attachment points are a known place for a
+model to report a locally elevated stress that isn't the real
+root-governing value; treat this peak as a modeling-artifact caveat, not
+a structural conclusion.*
+
+Getting this far needed two real fixes, not just a new render:
+`get_max_stress` raised `AttributeError` against this deck's composite
+(PCOMP) stress table, which indexes by `.element_layer` (one row per ply)
+instead of `.element`/`.element_node` like every other stress result
+tested so far -- fixed generically in `_element_ids_for`, not special-
+cased to this one model. Separately, this deck's rigid elements
+(`RBE2`/`RBE3`), its own coordinate systems, and its per-ply material
+orientations made pyNastranGUI create over a dozen extra actors
+(`Coord 511`, `mcid ply=1..20`, `rigid_lines`, `SPC=3`, ...) that produced
+an unreadable render (oversized overlapping text, a badly mis-framed
+model) -- fixed by hiding everything except the actual mesh, rather than
+hardcoding yet another actor name.
+
 ## Honest caveats
 
 This pipeline explicitly does **not**:
