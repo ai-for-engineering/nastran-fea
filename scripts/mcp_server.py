@@ -450,6 +450,59 @@ def get_max_stress(op2_path: str) -> dict[str, Any]:
     return peaks
 
 
+@mcp.tool()
+def get_normal_modes(op2_path: str) -> dict[str, Any]:
+    """Parse a SOL 103 (normal modes) OP2 and return each extracted mode's
+    number and natural frequency:
+
+        {"subcase": 1, "modes": [{"mode_number": 1, "frequency_hz": 9.17,
+                                   "eigenvalue": 3320.76}, ...]}
+
+    frequency_hz is computed directly as sqrt(eigenvalue) / (2*pi) rather
+    than trusting pyNastran's own eigenvector result object's `mode_cycles`
+    attribute -- confirmed by comparing against a real F06's own printed
+    EIGENVALUE/RADIANS/CYCLES columns that `mode_cycles` actually holds the
+    RADIANS column (rad/s) for this result type, not CYCLES (Hz) despite
+    the name; other pyNastran result classes label a `mode_cycles` field
+    "freq ... Hz" in their own F06-writing code, so the name alone isn't a
+    reliable guide for this particular array. eigenvalue (rad^2/s^2) is
+    reported alongside frequency_hz for anyone who wants to redo that math.
+
+    Raises if the OP2 has no eigenvector table at all (e.g. it's a static
+    analysis, not a modal one -- see get_max_stress for that case instead).
+    Only the first subcase's eigenvectors are reported; a deck with more
+    than one modal subcase is not exercised by any case study in this repo.
+    """
+    import numpy as np
+    from pyNastran.op2.op2 import OP2
+
+    path = Path(op2_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"OP2 file not found: {path}")
+    if not os.access(path, os.R_OK):
+        raise PermissionError(f"OP2 file is not readable: {path}")
+
+    op2 = OP2(debug=False)
+    op2.read_op2(str(path))
+
+    if not op2.eigenvectors:
+        raise ValueError(
+            f"No eigenvector results found in {path} -- is this a SOL 103 "
+            "(normal modes) analysis? Use get_max_stress for a static run."
+        )
+
+    subcase_id, eig = next(iter(op2.eigenvectors.items()))
+    modes = [
+        {
+            "mode_number": int(mode_number),
+            "frequency_hz": float(np.sqrt(eigenvalue) / (2.0 * np.pi)),
+            "eigenvalue": float(eigenvalue),
+        }
+        for mode_number, eigenvalue in zip(eig.modes, eig.eigns)
+    ]
+    return {"subcase": int(subcase_id), "modes": modes}
+
+
 # ---------------------------------------------------------------------------
 # describe_loads_and_boundary_conditions
 # ---------------------------------------------------------------------------
@@ -713,10 +766,20 @@ _DEFAULT_RENDER_TIMEOUT_S = 300
 # select whichever case has methods[imethod] == "Stress XX" -- pyNastran's
 # label (RealBarStressArray.get_headers()) for the real per-element CBAR
 # axial-stress column, confirmed at index 4 of its 15-column header layout.
+#
+# "mode_shape" is also a sentinel: a SOL 103 (normal modes) OP2 stores every
+# mode's eigenvector displacement under the SAME resname ("Eigenvectors
+# T_XYZ", confirmed by inspecting self.result_cases against a real modal
+# OP2), differentiated only by the (itime, resname) tuple's itime -- which
+# lines up 0-indexed with mode order (mode 1 -> itime 0, confirmed against
+# the same real case). A plain substring match would always find mode 1;
+# _build_postscript's mode-shape branch additionally filters on itime to
+# pick the specific mode_number the caller asked for.
 _FRINGE_RESULT_MATCH = {
     "von_mises": "vonmises",
     "displacement": "displacementt",
     "axial": "__bar_axial__",
+    "mode_shape": "__mode_shape__",
 }
 
 # pyNastranGUI's default main-window render size on this setup, confirmed
@@ -1265,7 +1328,14 @@ def _camera_look_direction_for_governing_element(
     import numpy as np
     from pyNastran.bdf.bdf import BDF
 
-    peaks = get_max_stress(str(op2_path))
+    try:
+        peaks = get_max_stress(str(op2_path))
+    except ValueError:
+        # No stress table at all -- e.g. a SOL 103 (normal modes) OP2 for a
+        # result="mode_shape" render, which has eigenvectors but no OES
+        # stress results to aim at. Same "nothing to aim at" signal as a
+        # bar-only model below; the caller falls back to a fixed preset.
+        return None
     plate_peaks = {etype: peak for etype, peak in peaks.items() if "von_mises" in peak}
     if not plate_peaks:
         return None
@@ -1452,6 +1522,7 @@ def _build_postscript(
     | None = None,
     legend_y: float = 0.56,
     fringe_match: str = "vonmises",
+    mode_index: int | None = None,
 ) -> str:
     """Build a pyNastranGUI postscript (see spikes/pynastrangui_screenshot_
     postscript.py and issue #8) that sets a camera preset, optionally
@@ -1508,10 +1579,12 @@ def _build_postscript(
     entirely: (focal_point, position, view_up), all (x, y, z) world
     coordinates/vectors, computed by
     _camera_look_direction_for_governing_element so the camera views the
-    model from whichever isometric octant best faces the governing stress
-    element's outward face normal -- guaranteeing an unobstructed view of
-    it -- then vtkRenderer.ResetCamera() fits the whole model to the frame
-    along that fixed direction.
+    model along whichever of its own natural {thickness, chord} axes best
+    faces the governing stress element's outward face normal -- guaranteeing
+    an unobstructed view of it while keeping span horizontal and root on
+    the left (see the "Natural-orientation camera philosophy" comment above
+    _natural_axes) -- then vtkRenderer.ResetCamera() fits the whole model to
+    the frame along that fixed direction.
 
     want_stress_fringe searches the loaded result cases for one whose name
     matches fringe_match case/whitespace/underscore-insensitively (default
@@ -1536,6 +1609,13 @@ def _build_postscript(
     label for the real per-element CBAR axial-stress column (confirmed via
     RealBarStressArray.get_headers(), index 4 of 15) -- rather than
     string-matching the case name itself.
+
+    fringe_match == "__mode_shape__" (result="mode_shape") is a third
+    special path: every mode's eigenvector displacement shares the same
+    resname ("Eigenvectors T_XYZ"), so this mode additionally filters on
+    the case's own itime matching mode_index (0-indexed; mode_number - 1)
+    to pick the specific mode the caller asked for, rather than always
+    finding mode 1.
     """
     output_png_repr = repr(str(output_png))
     fringe_flag_repr = repr(str(output_png) + ".fringe_set")
@@ -1652,7 +1732,26 @@ self.geometry_actors['main'].GetProperty().SetColor(0.55, 0.55, 0.6)
 """
 
     fringe_block = ""
-    if want_stress_fringe and fringe_match == "__bar_axial__":
+    if want_stress_fringe and fringe_match == "__mode_shape__":
+        fringe_block = f"""
+_fringe_set = False
+for _key, _val in self.result_cases.items():
+    try:
+        _obj, (_i, _resname) = _val
+    except Exception:
+        continue
+    if (
+        isinstance(_resname, str)
+        and _resname.lower().replace(" ", "").replace("_", "") == "eigenvectorstxyz"
+        and _i == {mode_index!r}
+    ):
+        self.on_fringe(_key)
+        _fringe_set = True
+        break
+with open({fringe_flag_repr}, "w") as _f:
+    _f.write("1" if _fringe_set else "0")
+"""
+    elif want_stress_fringe and fringe_match == "__bar_axial__":
         fringe_block = f"""
 _fringe_set = False
 for _key, _val in self.result_cases.items():
@@ -1819,7 +1918,26 @@ def _render(
     zoom: float | None,
     timeout: float | None,
     result: str = "von_mises",
+    mode_number: int | None = None,
 ) -> dict[str, Any]:
+    # Pure argument-shape validation first, before touching the filesystem
+    # at all -- fail fast on a bad call rather than reporting a confusing
+    # "file not found" for e.g. a caller who passed mode_number without
+    # result="mode_shape" and a placeholder op2_path.
+    if camera != "auto" and camera not in _CAMERA_PRESETS:
+        raise ValueError(
+            f"Unknown camera preset {camera!r}; choose from "
+            f"{sorted(_CAMERA_PRESETS) + ['auto']}"
+        )
+    if result not in _FRINGE_RESULT_MATCH:
+        raise ValueError(
+            f"Unknown result {result!r}; choose from {sorted(_FRINGE_RESULT_MATCH)}"
+        )
+    if result == "mode_shape" and mode_number is None:
+        raise ValueError("result='mode_shape' needs mode_number (1-indexed) to pick a mode")
+    if result != "mode_shape" and mode_number is not None:
+        raise ValueError("mode_number only applies to result='mode_shape'")
+
     in_path = Path(bdf_path).resolve()
     if not in_path.is_file():
         raise FileNotFoundError(f"BDF file not found: {in_path}")
@@ -1830,15 +1948,6 @@ def _render(
         if not resolved_op2_path.is_file():
             raise FileNotFoundError(f"OP2 file not found: {resolved_op2_path}")
 
-    if camera != "auto" and camera not in _CAMERA_PRESETS:
-        raise ValueError(
-            f"Unknown camera preset {camera!r}; choose from "
-            f"{sorted(_CAMERA_PRESETS) + ['auto']}"
-        )
-    if result not in _FRINGE_RESULT_MATCH:
-        raise ValueError(
-            f"Unknown result {result!r}; choose from {sorted(_FRINGE_RESULT_MATCH)}"
-        )
     is_isolating = bool(isolate_groups or isolate_property_ids)
     if camera == "auto" and resolved_op2_path is None and not is_isolating:
         raise ValueError(
@@ -1890,22 +1999,22 @@ def _render(
     hidden_eids = _resolve_hidden_eids(
         in_path, hide_groups, hide_property_ids, isolate_groups, isolate_property_ids, ses_path
     )
-    if hidden_eids and result == "displacement" and resolved_op2_path is not None:
-        # _write_filtered_op2 (below) drops displacement/velocity/etc.
-        # result categories entirely -- it only ever trims and keeps stress
-        # tables, since that's all a von Mises or axial fringe needs. A
-        # displacement fringe combined with hide_*/isolate_* would silently
-        # find nothing to show (fringe_set=False) rather than erroring,
-        # which is worse than just saying so up front: this combination
-        # isn't supported yet, so ask for the untrimmed model instead of
-        # guessing.
+    if hidden_eids and result in ("displacement", "mode_shape") and resolved_op2_path is not None:
+        # _write_filtered_op2 (below) drops displacement/eigenvector/
+        # velocity/etc. result categories entirely -- it only ever trims
+        # and keeps stress tables, since that's all a von Mises or axial
+        # fringe needs. A displacement or mode-shape fringe combined with
+        # hide_*/isolate_* would silently find nothing to show
+        # (fringe_set=False) rather than erroring, which is worse than just
+        # saying so up front: this combination isn't supported yet, so ask
+        # for the untrimmed model instead of guessing.
         raise ValueError(
             f"result={result!r} with hide_groups/hide_property_ids/"
             "isolate_groups/isolate_property_ids isn't supported yet -- "
             "the OP2 trimming needed to avoid the geometry/results mismatch "
             "hang (see _write_filtered_op2) only preserves stress tables, "
-            "so a displacement fringe would silently find nothing to show. "
-            "Render the full, untrimmed model for a displacement contour."
+            f"so a {result} fringe would silently find nothing to show. "
+            f"Render the full, untrimmed model for a {result} contour."
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1991,6 +2100,7 @@ def _render(
                 custom_camera=custom_camera,
                 fringe_match=_FRINGE_RESULT_MATCH[result],
                 legend_y=legend_y,
+                mode_index=(mode_number - 1 if mode_number is not None else None),
             )
         )
         fringe_flag_path = Path(str(out_png) + ".fringe_set")
@@ -2131,19 +2241,31 @@ def render_stress_contour(
     zoom: float | None = None,
     timeout: float | None = None,
     result: str = "von_mises",
+    mode_number: int | None = None,
 ) -> dict[str, Any]:
     """Same as render_model_view, but also loads op2_path and colors the
     view by a result -- "von_mises" (default, plate elements only),
     "displacement" (nodal translational displacement magnitude, T_XYZ;
-    rotational displacement isn't exposed here), or "axial" (bar elements
+    rotational displacement isn't exposed here), "axial" (bar elements
     only -- CBAR's real per-element axial direct stress, RealBarStressArray's
     own "axial" column, NOT the GUI-synthesized pseudo-vonMises case bars
-    get lumped into under result="von_mises"). The result dict includes
-    "fringe_set": True if a matching result case was found and applied,
-    False if the OP2 has no such case (e.g. result="von_mises" against a
-    bar-only model, or result="axial" against a plate-only one -- see
-    get_max_stress's "max_stress" vs "von_mises" distinction) and
-    pyNastranGUI's default coloring was left in place instead.
+    get lumped into under result="von_mises"), or "mode_shape" (a SOL 103
+    normal-modes OP2's eigenvector displacement for one specific mode --
+    see get_normal_modes for the frequency each mode_number corresponds
+    to). The result dict includes "fringe_set": True if a matching result
+    case was found and applied, False if the OP2 has no such case (e.g.
+    result="von_mises" against a bar-only model, or result="axial" against
+    a plate-only one -- see get_max_stress's "max_stress" vs "von_mises"
+    distinction) and pyNastranGUI's default coloring was left in place
+    instead.
+
+    mode_number (1-indexed, matching NASTRAN's own MODE numbering) is
+    required with result="mode_shape" and an error with any other result --
+    every mode's eigenvector shares the same result-case name ("Eigenvectors
+    T_XYZ", confirmed by inspecting a real modal OP2's self.result_cases),
+    differentiated only by which mode's data a given case actually holds,
+    so there's no way to guess which one the caller wants the way a plain
+    substring match works for von_mises/displacement.
 
     result="axial" is what actually colors an all-CBAR selection (e.g.
     isolate_groups=["Stiffeners"]) by stress instead of leaving it as bare
@@ -2159,28 +2281,32 @@ def render_stress_contour(
     by the same OP2 trimming) -- only result="displacement" is restricted
     to the untrimmed model.
 
-    result="displacement" doesn't support hide_groups/hide_property_ids/
-    isolate_groups/isolate_property_ids (raises if combined) -- the OP2
-    trimming those need to avoid a real pyNastranGUI hang (see
-    _write_filtered_op2) only preserves stress tables, so a displacement
-    fringe on a trimmed OP2 would silently find nothing to show. Render the
-    full model for a displacement contour.
+    result="displacement" and result="mode_shape" don't support
+    hide_groups/hide_property_ids/isolate_groups/isolate_property_ids
+    (raises if combined) -- the OP2 trimming those need to avoid a real
+    pyNastranGUI hang (see _write_filtered_op2) only preserves stress
+    tables, so a displacement or mode-shape fringe on a trimmed OP2 would
+    silently find nothing to show. Render the full model for either.
 
     camera: "iso"/"top"/"side"/"front"/"planform" (see _CAMERA_PRESETS), or
-    the default, "auto". Without isolate_groups/isolate_property_ids, "auto" looks up the
-    governing (highest von Mises) plate element via get_max_stress, then
-    views the model from whichever of the 8 canonical isometric octants
-    (equal angle to all three world axes -- the standard engineering-
-    drawing convention, chosen specifically because no single axis is
-    degenerate the way a "top"/"side" preset can be) best faces that
-    element's outward face normal, before fitting the whole model to the
-    frame. This isn't a hard occlusion guarantee the way aiming exactly
-    down the element's own normal would be (some other part of the model
-    could in principle sit further out along that octant's fixed diagonal),
-    but it keeps the governing element close to face-on and avoids the
-    foreshortened-edge-on failure mode a fixed preset can leave it in, while
-    being a simpler, more standard view than a continuously-computed exact
-    direction. WITH isolate_groups/isolate_property_ids, "auto" aims for the
+    the default, "auto". Without isolate_groups/isolate_property_ids, "auto"
+    looks up the governing (highest von Mises) plate element via
+    get_max_stress, then builds a view direction from the model's own
+    natural span/chord/thickness axes (detected from its bounding-box
+    proportions, not hardcoded to any literal X/Y/Z -- see the
+    "Natural-orientation camera philosophy" comment above _natural_axes):
+    whichever of {thickness, chord} the governing element's own outward
+    normal aligns with more strongly becomes the dominant viewing axis
+    (sign-matched to the normal, guaranteeing the face is lit toward the
+    camera), keeping span horizontal and rolling the camera so root lands
+    on the left. This isn't a hard occlusion guarantee the way aiming
+    exactly down the element's own normal would be (some other part of the
+    model could in principle sit further out along that direction), but it
+    keeps the governing element close to face-on and avoids both the
+    foreshortened-edge-on failure a fixed preset can leave it in and the
+    portrait-rotation failure an equal-weighted isometric octant search
+    produced on a real published render of this project's own NASA CRM
+    wingbox case study. WITH isolate_groups/isolate_property_ids, "auto" aims for the
     isolated elements' shared face normal instead (see
     _camera_look_direction_for_isolated_group) -- isolating already removes
     any occlusion concern, so showing the isolated sub-component itself well
@@ -2242,6 +2368,7 @@ def render_stress_contour(
         zoom=zoom,
         timeout=timeout,
         result=result,
+        mode_number=mode_number,
     )
 
 

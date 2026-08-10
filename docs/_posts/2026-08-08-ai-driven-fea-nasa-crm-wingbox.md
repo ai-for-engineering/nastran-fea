@@ -84,14 +84,18 @@ MYSTRAN developed by Dr Bill Case
 
 MYSTRAN ([source/releases](https://github.com/MystranSolver/MYSTRANSolver))
 is a community-maintained, open-source Nastran-compatible solver. It
-implements a bounded subset of commercial MSC/NX Nastran: this case study
-exercises `SOL 101` (linear statics) only. Not supported or incomplete:
-nonlinear statics/dynamics, transient/frequency response, thermal,
-aeroelasticity, design optimization, and a narrower materials/element
-library than commercial Nastran.
+implements a bounded subset of commercial MSC/NX Nastran: `SOL 101`
+(linear statics, the NASA CRM wingbox above) and `SOL 103` (normal modes,
+the DLR ISTAR wing below) are both exercised in this project. Not
+supported or incomplete: nonlinear statics/dynamics, transient/frequency
+response, thermal, aeroelasticity, design optimization, and a narrower
+materials/element library than commercial Nastran.
 
-The MAT2/MID4 rejection above (uCRM) is one concrete instance of that
-boundary.
+Two concrete instances of that narrower library, both found by trying to
+run real third-party decks rather than assumed up front: the MAT2/MID4
+rejection above (uCRM), and `CBEAM`/`PBEAM`/`PBEAML` not being supported
+at all (pCRM9, below -- confirmed directly against MYSTRAN's own bundled
+manual, which documents `CBAR`/`PBAR` but neither of those).
 
 ## What's actually being applied: loads and boundary conditions
 
@@ -315,6 +319,93 @@ peak stresses (same `get_max_stress` call against each group's trimmed
 OP2) are tabulated in
 Peak stress by component above.
 
+## A second case study: does the camera logic generalize?
+
+Every camera/zoom decision above was tuned against one model. Testing it
+against a second, independently-authored wing -- different mesh, different
+author, different unit system -- is a better check than re-running the
+same case study again. Two were tried.
+
+### pCRM9: a real solver-compatibility gap, found honestly
+
+[pCRM9](https://zenodo.org/records/6390714) (TU Delft / University of
+Michigan CRM-derived geometry, CC-BY 4.0) parses and renders cleanly
+through the same camera/zoom pipeline -- and in the process exposed a real
+bug the pipeline's own tests never caught: isolating a single small panel
+from this model revealed that `_write_filtered_bdf` left orphaned `GRID`
+nodes in place, which leaked into the zoom auto-fit's measurement and
+undersized the render. It went unnoticed against the NASA CRM wingbox
+because every isolated group tested there (ribs, skin panels) already
+spans nearly the whole span, so the bug had nothing to bite on. Fixed with
+pyNastran's own `remove_unused` utility.
+
+Solving it is a different story. MYSTRAN 19.0.0's own bundled manual
+doesn't document `CBEAM`, `PBEAM`, or `PBEAML` at all -- confirmed
+directly against the manual, not inferred from a parse error alone.
+~31% of this model's elements (1,147 `CBEAM` spar-cap/stiffener elements)
+use exactly those cards. Converting them to MYSTRAN's supported
+`CBAR`/`PBAR` is possible -- pyNastran computes exact area and bending
+inertia for the library cross-section directly, and a standard textbook
+formula gets a reasonable torsion constant -- but it's a big enough change
+to the original model that it's logged as a known gap rather than solved
+silently, the same treatment the uCRM `PSHELL`/`MID4` gap already got
+above.
+
+### The DLR ISTAR wing: composite shells, real normal modes
+
+[The ISTAR demonstrator wing](https://zenodo.org/records/7017137) (DLR,
+CC-BY 4.0) is a genuinely different construction: 1,574 CQUAD4 elements,
+each with its own multi-layer GFRP composite layup (`PCOMP` + `MAT8`) --
+no isotropic material and no bar element anywhere in the deck. It solves
+cleanly, and its own original analysis is `SOL 103` (normal modes), not a
+static stress case -- exercising a genuinely different part of the
+pipeline than either wing above.
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/istar_wing_overview.png" alt="Elevated planform view of the DLR ISTAR composite demonstrator wing" style="max-width:100%;">
+
+*Rendered via `render_model_view`, camera="planform" -- the same fixed
+preset tuned against the NASA CRM wingbox, applied unchanged to a wing a
+fraction of the size, from a different institution, in different units.*
+
+A new tool, `get_normal_modes`, reports each extracted mode's natural
+frequency directly from the OP2's eigenvalues (`sqrt(eigenvalue) /
+(2*pi)`, not pyNastran's own confusingly-named `mode_cycles` attribute --
+confirmed by cross-checking against a real F06's printed columns that it
+actually holds radians/s for this result type, not Hz, despite the name).
+The original dataset ships a real MSC Nastran 2018.2 run of the identical
+deck, giving a genuine independent check rather than just "the solver
+exited 0": MYSTRAN's frequencies agree with MSC's to 6 significant figures
+on every one of the 15 extracted modes.
+
+| Mode | Frequency (Hz) |
+|---|---|
+| 1 | 9.171 |
+| 2 | 31.710 |
+| 3 | 56.227 |
+| 4 | 69.472 |
+| 5 | 107.975 |
+
+`render_stress_contour`'s `result="mode_shape"` colors by one specific
+mode's eigenvector displacement -- `mode_number` picks which one, since
+(unlike stress or displacement) every mode shares the same result-case
+name in the OP2, differentiated only by which mode's data a given case
+actually holds:
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/istar_wing_mode1.png" alt="First bending mode shape of the DLR ISTAR wing, 9.17 Hz" style="max-width:100%;">
+
+*Mode 1, 9.17 Hz -- first bending: displacement grows monotonically from
+the fixed root to the free tip.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/istar_wing_mode2.png" alt="Second mode shape of the DLR ISTAR wing, 31.71 Hz, showing a diagonal deflection gradient across the wing rather than a simple root-to-tip pattern" style="max-width:100%;">
+
+*Mode 2, 31.71 Hz -- a visibly different shape: the peak deflection band
+runs diagonally across the wing rather than concentrating at the tip,
+consistent with a coupled bending-torsion mode.*
+
+(pyNastranGUI's own on-screen label under each render says "freq = ...
+Hz" -- that's the same `mode_cycles` mislabeling mentioned above, actually
+radians/s. Use `get_normal_modes`'s own value, not the caption.)
+
 ## Honest caveats
 
 This pipeline explicitly does **not**:
@@ -328,8 +419,8 @@ This pipeline explicitly does **not**:
   Non-interactive, not headless — needs an active desktop or a CI runner
   with a display.
 - **Match commercial Nastran's solver scope.** MYSTRAN has real capability
-  gaps (e.g. PSHELL/MID4, above) — check before assuming a given model runs
-  on the open-source stack.
+  gaps (PSHELL/MID4 and CBEAM/PBEAM/PBEAML, both above) — check before
+  assuming a given model runs on the open-source stack.
 
 ## What's next
 
