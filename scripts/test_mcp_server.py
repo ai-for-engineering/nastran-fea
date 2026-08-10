@@ -100,6 +100,18 @@ STRESS = ALL
 BEGIN BULK
 """
 
+# SOL 103 (normal modes) case control -- no LOAD (eigenvalue analysis has
+# none), METHOD points at the EIGRL card the modal_bdf fixture adds.
+MODAL_CASE_CONTROL = """\
+SOL 103
+CEND
+ECHO = NONE
+SPC = 1
+METHOD = 1
+DISPLACEMENT = ALL
+BEGIN BULK
+"""
+
 
 @pytest.fixture
 def proper_bdf(tmp_path: Path) -> Path:
@@ -332,6 +344,71 @@ def test_get_max_stress_end_to_end_cbar(cbar_bdf: Path):
 
 
 # ---------------------------------------------------------------------------
+# get_normal_modes
+# ---------------------------------------------------------------------------
+
+def test_get_normal_modes_missing_file(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        ms.get_normal_modes(str(tmp_path / "does_not_exist.OP2"))
+
+
+@pytest.mark.skipif(
+    not Path(DEFAULT_SOLVER_PATH).is_file(),
+    reason=(
+        "MYSTRAN solver binary not present (solver/ is gitignored, ~24MB -- "
+        "see README setup instructions); cannot produce a real OP2 to parse "
+        "in this environment."
+    ),
+)
+def test_get_normal_modes_raises_on_static_op2(proper_bdf: Path):
+    """A static (SOL 101) OP2 has no eigenvector table at all -- should
+    raise a clear error pointing at get_max_stress instead, not something
+    confusing like an empty modes list or a KeyError."""
+    solver_result = ms.run_solver(str(proper_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    with pytest.raises(ValueError, match="eigenvector"):
+        ms.get_normal_modes(solver_result["op2_path"])
+
+
+@pytest.mark.skipif(
+    not Path(DEFAULT_SOLVER_PATH).is_file(),
+    reason=(
+        "MYSTRAN solver binary not present (solver/ is gitignored, ~24MB -- "
+        "see README setup instructions); cannot produce a real OP2 to parse "
+        "in this environment."
+    ),
+)
+def test_get_normal_modes_end_to_end(modal_bdf: Path):
+    """Solve a real SOL 103 cantilever plate and check the frequency math:
+    frequency_hz is computed as sqrt(eigenvalue)/(2*pi) rather than trusted
+    from pyNastran's confusingly-named mode_cycles attribute (see
+    get_normal_modes's own docstring for why) -- this cross-checks that
+    computation directly against the raw eigenvalue for every mode."""
+    import math
+
+    solver_result = ms.run_solver(str(modal_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    result = ms.get_normal_modes(solver_result["op2_path"])
+    assert result["subcase"] == 1
+    modes = result["modes"]
+    assert len(modes) == 5
+    assert [m["mode_number"] for m in modes] == [1, 2, 3, 4, 5]
+
+    # A real cantilever plate's natural frequencies are strictly increasing
+    # and strictly positive -- not a degenerate/rigid-body 0 Hz mode, since
+    # this model is genuinely fixed along one edge.
+    frequencies = [m["frequency_hz"] for m in modes]
+    assert frequencies == sorted(frequencies)
+    assert frequencies[0] > 0
+
+    for mode in modes:
+        expected_hz = math.sqrt(mode["eigenvalue"]) / (2.0 * math.pi)
+        assert mode["frequency_hz"] == pytest.approx(expected_hz, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
 # describe_loads_and_boundary_conditions
 # ---------------------------------------------------------------------------
 
@@ -500,6 +577,64 @@ def two_property_bdf(tmp_path: Path) -> Path:
 
     path = tmp_path / "two_prop.bdf"
     path.write_text(CBAR_CASE_CONTROL + bulk_path.read_text())
+    return path
+
+
+@pytest.fixture
+def modal_bdf(tmp_path: Path) -> Path:
+    """A small cantilevered CQUAD4 plate (4 elements) set up for SOL 103
+    (normal modes) instead of a static analysis -- same shape family as
+    two_property_bdf, but fixed along one whole edge (a real cantilever,
+    so the extracted modes are physically meaningful bending/torsion
+    shapes) and with an EIGRL requesting the first 5 modes rather than a
+    FORCE card, since an eigenvalue analysis has no loads at all."""
+    from pyNastran.bdf.bdf import BDF
+
+    model = BDF()
+    model.add_grid(1, [0.0, 0.0, 0.0])
+    model.add_grid(2, [1.0, 0.0, 0.0])
+    model.add_grid(3, [2.0, 0.0, 0.0])
+    model.add_grid(4, [0.0, 1.0, 0.0])
+    model.add_grid(5, [1.0, 1.0, 0.0])
+    model.add_grid(6, [2.0, 1.0, 0.0])
+    model.add_grid(7, [0.0, 2.0, 0.0])
+    model.add_grid(8, [1.0, 2.0, 0.0])
+    model.add_grid(9, [2.0, 2.0, 0.0])
+    # Two properties (not one shared by all four elements), same as
+    # two_property_bdf -- so isolate_property_ids=[1] actually excludes
+    # something real (elements 3/4) instead of being a no-op that leaves
+    # hidden_eids empty and never exercises the isolate+mode_shape
+    # rejection path at all.
+    model.add_cquad4(1, 1, [1, 2, 5, 4])
+    model.add_cquad4(2, 1, [2, 3, 6, 5])
+    model.add_cquad4(3, 2, [4, 5, 8, 7])
+    model.add_cquad4(4, 2, [5, 6, 9, 8])
+    # mid2=1 (not left blank): PSHELL's MID2 field is the BENDING material
+    # -- per standard Nastran semantics, a blank MID2 means the shell has
+    # NO bending stiffness at all (membrane-only), confirmed the hard way
+    # against a real MYSTRAN solve: leaving it blank made AUTOSPC flag
+    # every free node's TZ/RX/RY/RZ as singular (only in-plane TX/TY
+    # survived), which starved the eigenproblem down to far fewer DOF than
+    # a cantilever plate should have and made even a small nd fail with
+    # "TOO MANY EIGENVALUES REQUESTED FOR THIS PROBLEM SIZE".
+    model.add_pshell(1, mid1=1, t=0.1, mid2=1)
+    model.add_pshell(2, mid1=1, t=0.1, mid2=1)
+    # rho=0.1 (not left at MAT1's own default of 0.0): a normal-modes
+    # analysis solves K*phi = lambda*M*phi -- a structure with zero mass
+    # anywhere makes that eigenproblem degenerate. Confirmed the hard way
+    # against a real MYSTRAN solve: with rho left at its default, MYSTRAN's
+    # own error was "TOO MANY EIGENVALUES REQUESTED FOR THIS PROBLEM SIZE"
+    # (NEV=-1) regardless of how small nd was set to, even nd=1 -- nothing
+    # to do with the requested mode count at all.
+    model.add_mat1(1, 1.0e7, None, 0.3, rho=0.1)
+    model.add_spc1(1, "123456", [1, 4, 7])
+    model.add_eigrl(1, nd=5)
+
+    bulk_path = tmp_path / "modal_bulk.bdf"
+    model.write_bdf(str(bulk_path), size=8, enddata=True)
+
+    path = tmp_path / "modal.bdf"
+    path.write_text(MODAL_CASE_CONTROL + bulk_path.read_text())
     return path
 
 
@@ -1013,3 +1148,105 @@ def test_render_stress_contour_axial_no_bar_stress(two_property_bdf: Path, tmp_p
     assert result["fringe_set"] is False
     assert output_png.is_file()
     assert output_png.stat().st_size > 0
+
+
+def test_render_stress_contour_mode_shape_requires_mode_number(
+    modal_bdf: Path, tmp_path: Path
+):
+    with pytest.raises(ValueError, match="mode_number"):
+        ms.render_stress_contour(
+            str(modal_bdf), str(tmp_path / "fake.OP2"), str(tmp_path / "out.png"),
+            result="mode_shape",
+        )
+
+
+def test_render_stress_contour_mode_number_rejected_without_mode_shape(
+    two_property_bdf: Path, tmp_path: Path
+):
+    with pytest.raises(ValueError, match="mode_number"):
+        ms.render_stress_contour(
+            str(two_property_bdf), str(tmp_path / "fake.OP2"), str(tmp_path / "out.png"),
+            result="von_mises", mode_number=1,
+        )
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_stress_contour_mode_shape_rejects_isolate(
+    modal_bdf: Path, tmp_path: Path
+):
+    """Same restriction as result="displacement": _write_filtered_op2 only
+    ever preserves stress tables, so a trimmed OP2 has no eigenvector table
+    left for a mode-shape fringe to find."""
+    solver_result = ms.run_solver(str(modal_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    with pytest.raises(ValueError, match="mode_shape"):
+        ms.render_stress_contour(
+            str(modal_bdf), solver_result["op2_path"], str(tmp_path / "out.png"),
+            result="mode_shape", mode_number=1, isolate_property_ids=[1],
+        )
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_stress_contour_mode_shape_end_to_end(modal_bdf: Path, tmp_path: Path):
+    """result="mode_shape" colors by one specific mode's eigenvector
+    displacement -- exercises _build_postscript's "__mode_shape__" branch
+    (itime-filtered, not a plain resname search, since every mode shares
+    the same resname) via the real tool, and confirms two different
+    mode_number values actually select two different modes rather than
+    both silently landing on mode 1."""
+    solver_result = ms.run_solver(str(modal_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    mode1_png = tmp_path / "mode1.png"
+    result1 = ms.render_stress_contour(
+        str(modal_bdf), solver_result["op2_path"], str(mode1_png),
+        camera="iso", result="mode_shape", mode_number=1,
+    )
+    assert result1["success"], result1.get("errors")
+    assert result1["fringe_set"] is True
+    assert mode1_png.stat().st_size > 0
+
+    mode2_png = tmp_path / "mode2.png"
+    result2 = ms.render_stress_contour(
+        str(modal_bdf), solver_result["op2_path"], str(mode2_png),
+        camera="iso", result="mode_shape", mode_number=2,
+    )
+    assert result2["success"], result2.get("errors")
+    assert result2["fringe_set"] is True
+    assert mode2_png.stat().st_size > 0
+
+    # Rendering two different modes at pixel-identical settings should not
+    # produce byte-identical files if mode_number is actually being
+    # honored (both would be if the itime filter silently always matched
+    # mode 1 regardless of what was asked for).
+    assert mode1_png.read_bytes() != mode2_png.read_bytes()
+
+
+@pytest.mark.skipif(
+    not (Path(DEFAULT_SOLVER_PATH).is_file() and _rendering_deps_available()),
+    reason=_RENDER_SKIP_REASON,
+)
+def test_render_model_view_auto_camera_falls_back_without_stress_table(
+    modal_bdf: Path, tmp_path: Path
+):
+    """camera="auto" with a modal-only OP2 (eigenvectors, no OES stress
+    table at all) must fall back to a fixed preset rather than crashing --
+    _camera_look_direction_for_governing_element calls get_max_stress
+    internally, which raises ValueError against an OP2 with no stress
+    table; that needs catching, not propagating."""
+    solver_result = ms.run_solver(str(modal_bdf))
+    assert solver_result["success"], solver_result["errors"]
+
+    output_png = tmp_path / "mode_auto.png"
+    result = ms.render_stress_contour(
+        str(modal_bdf), solver_result["op2_path"], str(output_png),
+        camera="auto", result="mode_shape", mode_number=1,
+    )
+    assert result["success"], result.get("errors")

@@ -67,6 +67,14 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   `"component"` (`"axial"`, `"bending"`, or `"combined (axial + bending)"`)
   and `"end"` (`"A"`/`"B"`, omitted for `"axial"` since it has no fixed
   end) -- `"max_stress"` alone doesn't say which of those it actually is.
+- `get_normal_modes(op2_path)` -- parses a `SOL 103` (normal modes) OP2
+  and returns each extracted mode's number, frequency (Hz), and eigenvalue
+  (rad²/s²). frequency_hz is computed as `sqrt(eigenvalue) / (2*pi)`
+  directly rather than trusted from pyNastran's own `mode_cycles`
+  eigenvector attribute — confirmed against a real F06 that despite the
+  name, it actually holds radians/s for this result type, not Hz. Raises
+  if the OP2 has no eigenvector table at all (e.g. a static analysis —
+  use `get_max_stress` for that instead).
 - `describe_loads_and_boundary_conditions(bdf_path)` -- explains what's
   actually constraining and loading the model, per subcase: reads SPC/SPC1
   (following SPCADD combinations) for boundary conditions and
@@ -91,10 +99,12 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   filtering as the fallback. `camera` picks a named preset (`"iso"`,
   `"top"`, `"side"`, `"front"`, `"planform"`) or `"auto"`
   (`render_stress_contour`'s default), which aims itself instead of
-  guessing: at whichever of the 8 canonical isometric octants best faces
-  the governing stress element normally, or at an isolated group's shared
-  face normal (tilted to fan out parallel elements like ribs so each is
-  distinguishable) when isolating. `"planform"` is tuned to match NASA's
+  guessing: along whichever of the model's own natural span/chord/thickness
+  axes (detected from its geometry, not hardcoded) best faces the governing
+  stress element normally, or at an isolated group's shared face normal
+  (tilted to fan out parallel elements like ribs so each is distinguishable)
+  when isolating -- both keep span horizontal and roll the camera so root
+  lands on the left. `"planform"` is tuned to match NASA's
   own CRM wingbox FEM description figures -- span horizontal in frame,
   elevated just enough to reveal the leading edge and root end-cap as
   depth cues -- a better single "what does this model look like" overview
@@ -110,16 +120,21 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   untrimmed OP2 is a real, confirmed hang in pyNastranGUI.
   `render_stress_contour`'s `result` parameter picks what to color by:
   `"von_mises"` (default, plate elements only), `"displacement"` (nodal
-  translational displacement magnitude), or `"axial"` (bar elements only --
+  translational displacement magnitude), `"axial"` (bar elements only --
   CBAR's real per-element axial direct stress, not the GUI-synthesized
   pseudo-vonMises value bars get lumped into under `"von_mises"`; see
   `_build_postscript`'s `"__bar_axial__"` branch for how it's found, since
   bar-stress cases aren't keyed by a descriptive name the way plate/
-  displacement cases are). `result="displacement"` doesn't support
-  `hide_*`/`isolate_*` (raises if combined) -- the OP2 trimming those need
-  only preserves stress tables, so a displacement fringe on a trimmed OP2
-  would silently find nothing to show; `"von_mises"` and `"axial"` are both
-  stress-table results and support `hide_*`/`isolate_*` fine.
+  displacement cases are), or `"mode_shape"` (one specific mode's
+  eigenvector displacement from a `SOL 103` OP2 -- requires `mode_number`,
+  1-indexed, since every mode shares the same result-case name; see
+  `_build_postscript`'s `"__mode_shape__"` branch, which additionally
+  filters on the case's own mode index). `result="displacement"` and
+  `result="mode_shape"` don't support `hide_*`/`isolate_*` (raises if
+  combined) -- the OP2 trimming those need only preserves stress tables,
+  so a displacement or mode-shape fringe on a trimmed OP2 would silently
+  find nothing to show; `"von_mises"` and `"axial"` are both stress-table
+  results and support `hide_*`/`isolate_*` fine.
 
 ## 3D visualization (pyNastranGUI)
 
@@ -170,9 +185,34 @@ nonzero MID4 (membrane-bending coupling) -- a real solver capability gap,
 not a bug in our pipeline. Worth knowing about before assuming any given
 anisotropic shell model will just run.
 
+## Case study: pCRM9 wing (geometry only -- real MYSTRAN gap)
+
+`case_studies/pcrm9_wingbox/` (gitignored, see its own README for the
+Zenodo source/license) is a second, independently-authored wing model
+(TU Delft / University of Michigan CRM-derived geometry, CBEAM + CQUAD4 +
+CTRIA3, mm/N/tonne units) added specifically to test whether the camera/
+zoom logic generalizes beyond the NASA CRM wingbox -- it does, and found a
+real bug in the process (see `_write_filtered_bdf`'s docstring). Not
+solved: MYSTRAN 19.0.0's own bundled manual doesn't document `CBEAM`,
+`PBEAM`, or `PBEAML` at all, and ~31% of this model's elements use exactly
+those cards. See the case study's own README for the full gap writeup.
+
+## Case study: DLR ISTAR wing (composite, normal modes)
+
+`case_studies/istar_wing/` (gitignored, see its own README for the Zenodo
+source/license) is a third wing model, and a genuinely different
+construction: composite CQUAD4 shells (`PCOMP`/`MAT8`, no isotropic
+material or bar element anywhere), and its own original analysis is
+`SOL 103` (normal modes) rather than static stress -- exercising
+`get_normal_modes` and `render_stress_contour`'s `result="mode_shape"`.
+Solves cleanly in MYSTRAN; its bundled original MSC Nastran 2018.2 F06
+lets frequencies be cross-checked independently (agreement to 6
+significant figures across all 15 extracted modes).
+
 ## Blog
 
 `docs/` is a GitHub Pages site (Jekyll, `minima` theme) with write-ups of
-each case study -- the wingbox one is up first, covering the pipeline end
-to end (case-control patch, solver-compatibility gap, results, conversational
-demo, and honest caveats).
+each case study -- the NASA CRM wingbox post covers the pipeline end to
+end (case-control patch, solver-compatibility gap, results, conversational
+demo, honest caveats) plus a second section on the pCRM9/DLR ISTAR
+generality check above.
