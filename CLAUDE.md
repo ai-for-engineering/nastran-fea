@@ -53,15 +53,30 @@ rationale here, just the reminder:
   README's NASA CRM case-study section.
 - pyNastranGUI's dependency versions (VTK pin, etc.) are documented in
   README's GUI section -- check there before reinstalling anything.
-- Gmsh's OpenCASCADE boolean fragment (`gmsh.model.occ.fragment`) -- needed
-  to glue multiple independently-authored midsurface CAD files into one
-  topologically connected mesh (shared nodes at real component
-  interfaces) -- is genuinely slow on real aircraft-structure geometry,
-  not just large synthetic models: fragmenting just 2 of the NASA CRM
-  wingbox's 5 component IGES files (ribs + spars, 91 of ~470 total faces)
-  took 234 seconds. Budget for this (or avoid it, per
-  `scripts/geometry_to_bdf.py`'s current single-component scope) before
-  assuming a full-assembly geometry pipeline is a quick add.
+- Gmsh's OpenCASCADE boolean fragment (`gmsh.model.occ.fragment`) -- the
+  textbook way to glue multiple independently-authored midsurface CAD
+  files into one topologically connected mesh -- is genuinely slow *and*
+  unreliable on real aircraft-structure geometry, not just large synthetic
+  models: fragmenting just 2 of the NASA CRM wingbox's 5 component IGES
+  files (ribs + spars, 91 of ~470 total faces) took 234 seconds and left
+  sub-micron sliver edges that `gmsh.model.occ.healShapes()` couldn't
+  reliably clean up (ineffective at small tolerances, crashed outright at
+  larger ones). `scripts/assemble_wingbox_geometry.py` abandoned this
+  approach entirely in favor of meshing each component independently and
+  welding coincident nodes afterward (a plain coordinate-tolerance
+  operation, no CAD engine involved) -- see its module docstring.
+- A gmsh mesh-generation failure with the message "1D mesh cannot be
+  divided by 2" is NOT necessarily a sign of degenerate/unhealable CAD --
+  confirmed it can also be a pure quad-recombination *parity* failure that
+  hits a single, perfectly clean geometry file with no merging involved at
+  all (`CRM_ribs.igs` alone: fine at `mesh_size=150`, fails this way at
+  `mesh_size=200`, triangulates fine at *both* sizes). `CRM_stringers.igs`
+  was first misdiagnosed as having inherent unfixable degenerate geometry
+  (all 3 available stringer file variants failed identically) before
+  realizing recombination alone was the cause. Check whether
+  `Mesh.RecombineAll` is involved before concluding a geometry file itself
+  is broken -- `scripts/geometry_to_bdf.py`'s `_mesh_single_geometry`
+  now retries once with recombination off automatically.
 - A geometry file's own units and a target BDF's units are not guaranteed
   to match, and nothing about the file format says which was used. The
   NASA CRM wingbox's IGES midsurfaces are in mm; its own existing solved
@@ -134,20 +149,31 @@ Things with no README equivalent (code-level, not usage-level):
 - `scripts/run_solver.py` -- generic MYSTRAN invocation wrapper (see
   Gotchas); not tied to any specific model
 - `scripts/mcp_server.py` -- MCP server wrapping the pipeline
-  (mesh_geometry_to_bdf/load_model/patch_case_control/run_solver/
-  get_max_stress/render_model_view/render_stress_contour) as tool calls;
-  see README's MCP server section. Imports `geometry_to_bdf.py`,
+  (mesh_geometry_to_bdf/mesh_assembly_to_bdf/load_model/
+  patch_case_control/run_solver/get_max_stress/render_model_view/
+  render_stress_contour) as tool calls; see README's MCP server section.
+  Imports `geometry_to_bdf.py`, `assemble_wingbox_geometry.py`,
   `run_solver.py`, and `ses_groups.py` rather than duplicating them.
   `scripts/test_mcp_server.py` has the smoke tests.
 - `scripts/geometry_to_bdf.py` -- pre-processing: Gmsh (OpenCASCADE) IGES/
   STEP import + 2D meshing of a single midsurface component into a
-  GRID/CQUAD4/CTRIA3 + PSHELL + MAT1 BDF. Deliberately one-component-in,
-  one-property-out -- see its module docstring for why merging multiple
-  independently-authored midsurface files (e.g. NASA CRM's ribs/spars/
-  skins/stringers split) into one connected mesh is a documented gap, not
-  attempted. `scripts/test_geometry_to_bdf.py` has the tests, using a
-  synthetic on-the-fly STEP rectangle rather than the real (gitignored)
-  NASA CRM IGES files.
+  GRID/CQUAD4/CTRIA3 + PSHELL + MAT1 BDF. Its `_mesh_single_geometry`
+  helper is shared with `assemble_wingbox_geometry.py` below (multi-
+  component), including an automatic fallback to an all-triangle mesh if
+  quad recombination fails (a real, confirmed-non-CAD-related gmsh gotcha
+  -- see Gotchas above). `scripts/test_geometry_to_bdf.py` has the tests,
+  using a synthetic on-the-fly STEP rectangle rather than the real
+  (gitignored) NASA CRM IGES files.
+- `scripts/assemble_wingbox_geometry.py` -- pre-processing, multi-part:
+  meshes several IGES/STEP components independently and welds coincident
+  nodes across components into one connected BDF, one PSHELL per
+  component. Deliberately NOT a CAD-level boolean-fragment merge -- see
+  its module docstring for why that was tried first and abandoned, and
+  for the real transitive-union-find bug (two distinct same-component
+  nodes could collapse into one GRID) its conflict-aware weld algorithm
+  fixes. Validated end to end against the real, full 5-component NASA CRM
+  wingbox IGES download. `scripts/test_assemble_wingbox_geometry.py` has
+  the tests, synthetic (adjacent/disjoint rectangles) for speed/CI.
 - `scripts/ses_groups.py` -- parser for Patran/HyperMesh `.ses` session
   files' named element-group definitions (NOT Nastran format -- some case
   studies ship one as a bonus alongside the actual deck). See its docstring
