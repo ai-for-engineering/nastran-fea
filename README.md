@@ -48,18 +48,28 @@ Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
   material_e, material_g, material_nu, ...)` -- pre-processing: meshes a
   single IGES/STEP midsurface component (Gmsh's OpenCASCADE import + 2D
   quad-dominant meshing) into a BDF with GRID/CQUAD4/CTRIA3 + one PSHELL +
-  one MAT1, via pyNastran. Scoped deliberately to **one geometry file at a
-  time** -- see `scripts/geometry_to_bdf.py`'s module docstring for why a
-  full multi-part assembly merge (e.g. the NASA CRM wingbox's separate
-  ribs/spars/skins/stringers IGES files, gluing them into one topologically
-  connected mesh) is a documented gap rather than attempted here: a direct
-  test of the underlying OpenCASCADE boolean-fragment operation, on just 2
-  of those 5 files, took 234 seconds. `unit_scale` handles the geometry
-  file's own units not necessarily matching the target BDF's (the NASA CRM
-  IGES midsurfaces are in mm; the project's existing NASA CRM BDF is in
-  inches). No SPC/LOAD are written -- a freshly meshed single component has
-  no assembly context to invent a physically meaningful boundary condition
+  one MAT1, via pyNastran. `unit_scale` handles the geometry file's own
+  units not necessarily matching the target BDF's (the NASA CRM IGES
+  midsurfaces are in mm; the project's existing NASA CRM BDF is in inches).
+  No SPC/LOAD are written -- a freshly meshed single component has no
+  assembly context to invent a physically meaningful boundary condition
   from; add those afterward before `run_solver`.
+- `mesh_assembly_to_bdf(components, output_bdf_path, mesh_size, material_e,
+  material_g, material_nu, ...)` -- the multi-part follow-up: meshes
+  several IGES/STEP components independently and welds their nodes
+  together at shared interfaces (e.g. the NASA CRM wingbox's separate
+  ribs/spars/skins/rib_caps/stringers IGES files) into one connected BDF,
+  one PSHELL per component. **Not** an OpenCASCADE boolean-fragment merge
+  (the textbook approach) -- that was tried first and abandoned after
+  real, reproducible tooling limits on the actual NASA CRM geometry (234s
+  to fragment just 2 of 5 files, unhealable sub-micron sliver edges); see
+  `scripts/assemble_wingbox_geometry.py`'s module docstring for the full
+  story and for a real gmsh gotcha found along the way (a quad-
+  recombination *parity* failure, unrelated to geometry quality, that can
+  be misdiagnosed as unfixable degenerate CAD). Validated end to end
+  against the real, full 5-component NASA CRM wingbox download: 71,628
+  nodes, 79,247 elements, ~13s wall time, bounding box within 0.13% of the
+  real solved model's span.
 - `load_model(bdf_path)` -- parses with pyNastran, returns node/element/
   property/material counts and any parse warnings. A deck that fails to
   parse (e.g. OptiStruct-style, no SOL/CEND) comes back as a structured
