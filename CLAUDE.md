@@ -48,6 +48,23 @@ rationale here, just the reminder:
 - MYSTRAN's `PSHELL` can't take a nonzero `MID4` -- see README's case-studies
   section (uCRM vs NASA CRM) before assuming an anisotropic shell model will
   just run.
+- A `PSHELL` with `mid2` (bending material) left blank is a real, silent
+  trap, not a harmless default: Nastran gives that shell membrane-only
+  stiffness, zero bending. Confirmed the hard way rebuilding the NASA CRM
+  wingbox from geometry (`scripts/build_nasa_crm_from_geometry.py`) --
+  MYSTRAN's own `AUTOSPC` found literally every rotational DOF in the
+  entire ~70k-node model singular and silently auto-constrained all of
+  them (visible in the F06's own `*INFORMATION: AUTOSPC Summary` block,
+  not a soft-to-miss log line) rather than raising a hard error, producing
+  a deck that "solved" cleanly (no `*ERROR`/`FATAL`) with physically
+  nonsensical displacements (up to ~1e14 in). Always set `mid2`/`mid3` to
+  the same material as `mid1` for a simple isotropic shell -- the original
+  NASA CRM deck does exactly this on every one of its own `PSHELL` cards,
+  easy to miss since it doesn't stand out from `mid1` at a glance. A
+  correctly-conditioned solve of a model this size is also genuinely
+  slower (real bending stiffness = a much less trivially-reduced linear
+  system) -- budget significantly more than `run_solver`'s 600s default
+  timeout (confirmed needing ~15-20 min for this specific model).
 - OptiStruct-authored decks (no `SOL`/`CEND`, `ANALYSIS MODES/STATICS`
   syntax) need their case control rebuilt -- exact patch recipe is in
   README's NASA CRM case-study section.

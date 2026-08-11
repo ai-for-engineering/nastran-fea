@@ -227,7 +227,17 @@ def mesh_geometry_to_bdf(
 
     bdf = BDF()
     bdf.add_mat1(material.mid, material.e, material.g, material.nu, rho=material.rho)
-    bdf.add_pshell(pshell_id, mid1=material.mid, t=thickness)
+    # mid2 (bending) and mid3 (transverse shear) matter, not just mid1
+    # (membrane) -- confirmed the hard way against the real rebuilt NASA
+    # CRM wingbox: leaving them blank (Nastran's own default) gives the
+    # shell membrane-only stiffness, no bending at all. MYSTRAN's own
+    # AUTOSPC then silently auto-constrains literally every rotational
+    # DOF in the entire model (confirmed in its own F06 output) rather
+    # than raising a hard error, producing a technically-solved but
+    # physically nonsensical deck (displacements up to 1e14+ in). The
+    # original NASA CRM deck sets mid2=mid3=mid1 on every PSHELL; match
+    # that for a real isotropic shell.
+    bdf.add_pshell(pshell_id, mid1=material.mid, t=thickness, mid2=material.mid, mid3=material.mid)
 
     for tag, pos in zip(node_tags, xyz):
         bdf.add_grid(int(tag), pos.tolist())
