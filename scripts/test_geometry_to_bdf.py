@@ -132,6 +132,14 @@ def test_mesh_rectangle_round_trips_through_pynastran(rectangle_step: Path, tmp_
     assert bdf.properties[7].t == pytest.approx(0.25)
     assert bdf.materials[1].e == pytest.approx(1.0e7)
     assert bdf.materials[1].nu == pytest.approx(0.31)
+    # mid2 (bending)/mid3 (transverse shear) must be set, not left blank
+    # -- a blank mid2 gives Nastran a membrane-only shell with no bending
+    # stiffness at all, confirmed the hard way (see this call's own
+    # comment in geometry_to_bdf.py) to make MYSTRAN's AUTOSPC silently
+    # auto-constrain every rotational DOF in a real model instead of
+    # raising a hard error.
+    assert bdf.properties[7].mid2 == 1
+    assert bdf.properties[7].mid3 == 1
 
 
 def test_unit_scale_applies_to_coordinates_only(rectangle_step: Path, tmp_path: Path):

@@ -286,6 +286,8 @@ def mesh_assembly_to_bdf(
             "cquad4": result.n_cquad4,
             "ctria3": result.n_ctria3,
             "welded_pairs": result.n_welded_pairs,
+            "degenerate_skipped": result.n_degenerate_skipped,
+            "bowtie_skipped": result.n_bowtie_skipped,
         },
         "counts_by_component": result.counts_by_component,
         "bounding_box": result.bounding_box,

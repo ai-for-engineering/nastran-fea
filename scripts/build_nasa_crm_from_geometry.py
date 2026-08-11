@@ -66,6 +66,7 @@ from reconstruct_boundary_conditions import (  # noqa: E402
     add_spc_by_y_band,
     add_uniform_z_load,
 )
+from run_solver import run_solver  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GEOMETRY_DIR = (
@@ -84,6 +85,13 @@ OUTPUT_BDF_WITH_BC = (
     / "nasa_crm_wingbox"
     / "derived"
     / "rebuilt_from_geometry_with_bc.bdf"
+)
+OUTPUT_BDF_STATIC = (
+    REPO_ROOT
+    / "case_studies"
+    / "nasa_crm_wingbox"
+    / "derived"
+    / "rebuilt_from_geometry_static.bdf"
 )
 
 # Boundary conditions -- see module docstring for how these were derived
@@ -178,6 +186,52 @@ def main() -> None:
         "spcadd_id": SPCADD_ID,
         "load_id": LOAD_ID,
         "load_summary": load_summary,
+    }
+
+    # Case control (issue #45): SOL 101 static, matching the original
+    # deck's own patched case control exactly in structure (see README's
+    # NASA CRM case-study section) -- just pointing at this rebuild's own
+    # SPCADD/LOAD IDs instead of the original's.
+    from pyNastran.bdf.case_control_deck import CaseControlDeck
+
+    # bdf was read back from OUTPUT_BDF, a punch-style file (no executive/
+    # case control section, since #42/#43's writer only ever produces
+    # bulk data) -- pyNastran's own reader auto-detects that and sets
+    # bdf.punch = True, which then makes write_bdf() skip the executive/
+    # case control section entirely regardless of case_control_deck being
+    # set. Confirmed the real failure mode this causes: MYSTRAN's *ERROR
+    # 1011 ("NO CEND ENTRY FOUND") on a deck that looked, to a human
+    # reading it, like it obviously had one.
+    bdf.punch = False
+    bdf.sol = 101
+    bdf.case_control_deck = CaseControlDeck(
+        [
+            "ECHO = NONE",
+            f"SPC = {SPCADD_ID}",
+            f"LOAD = {LOAD_ID}",
+            "DISPLACEMENT = ALL",
+            "STRESS = ALL",
+        ],
+        log=bdf.log,
+    )
+    OUTPUT_BDF_STATIC.parent.mkdir(parents=True, exist_ok=True)
+    bdf.write_bdf(str(OUTPUT_BDF_STATIC), size=8, enddata=True)
+
+    # A properly-conditioned solve (real bending stiffness on every
+    # PSHELL, see the mid2/mid3 comment above) is a genuinely bigger
+    # linear system than run_solver's 600s default budgets for --
+    # confirmed directly: the real rebuilt model needed on the order of
+    # 15-20 minutes once mid2/mid3 were fixed (vs. under a minute for the
+    # earlier, incorrectly membrane-only version, which was solving a
+    # much smaller effective system after AUTOSPC silently removed nearly
+    # every rotational DOF).
+    solver_result = run_solver(OUTPUT_BDF_STATIC, timeout=2400)
+    summary["solve"] = {
+        "success": solver_result.success,
+        "dat_path": str(solver_result.dat_path),
+        "f06_path": str(solver_result.f06_path),
+        "op2_path": str(solver_result.op2_path),
+        "errors": solver_result.errors,
     }
     print(json.dumps(summary, indent=2))
 
