@@ -31,6 +31,25 @@ Per-group thickness sources, all real numbers, not guesses:
   measurement, and should be treated as the least-confident value in this
   rebuild when interpreting results.
 
+Boundary conditions and load (issue #44) are reconstructed geometrically
+against this rebuilt mesh's own node distribution, not copied from the
+original's node IDs (which don't correspond to anything in a re-meshed
+model):
+
+- Root SPC (T1/T2/T3): every node within 0.1 in of Y=0 -- confirmed a
+  clean, stable count (1,532 nodes) across a range of tolerances from
+  0.05 to 0.2 in, i.e. a genuine flat root cross-section, not an
+  arbitrary cutoff.
+- Second support SPC (T3 only): every node within 0.05 in of Y=120.25 --
+  a real rib station found by inspecting where RIBS-component nodes
+  actually cluster in this mesh (not assumed), remarkably close to
+  NASA's own documented second support point (~120 in, see #40's blog
+  Model description chapter).
+- Load: 249,777.6 lbf total in +Z (the original's own GVW resultant, see
+  #40), distributed evenly across every GRID node -- preserves the
+  original's total applied load rather than its literal per-node
+  magnitude, since this mesh has a different node count.
+
 Run: ./venv/Scripts/python.exe scripts/build_nasa_crm_from_geometry.py
 """
 from __future__ import annotations
@@ -43,6 +62,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from assemble_wingbox_geometry import Component, mesh_assembly_to_bdf  # noqa: E402
 from geometry_to_bdf import MaterialProperties  # noqa: E402
+from reconstruct_boundary_conditions import (  # noqa: E402
+    add_spc_by_y_band,
+    add_uniform_z_load,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GEOMETRY_DIR = (
@@ -55,6 +78,31 @@ GEOMETRY_DIR = (
 OUTPUT_BDF = (
     REPO_ROOT / "case_studies" / "nasa_crm_wingbox" / "derived" / "rebuilt_from_geometry.bdf"
 )
+OUTPUT_BDF_WITH_BC = (
+    REPO_ROOT
+    / "case_studies"
+    / "nasa_crm_wingbox"
+    / "derived"
+    / "rebuilt_from_geometry_with_bc.bdf"
+)
+
+# Boundary conditions -- see module docstring for how these were derived
+# from the rebuilt mesh's own node distribution, not assumed.
+ROOT_SPC_ID = 1
+ROOT_Y_TARGET = 0.0
+ROOT_Y_TOLERANCE = 0.1
+
+SECOND_SPC_ID = 2
+SECOND_Y_TARGET = 120.25
+SECOND_Y_TOLERANCE = 0.05
+
+SPCADD_ID = 10  # combines ROOT_SPC_ID + SECOND_SPC_ID for case control
+
+# GVW static-strength load: the original model's own resultant (see #40's
+# blog Model description chapter), reproduced as a total, not a per-node
+# value.
+LOAD_ID = 3
+TOTAL_LOAD_Z_LBF = 249_777.6
 
 # Aluminum, matching the original model's MAT1 exactly (see #40's Model
 # description chapter): E=1.0e7 psi, G=3.8e6 psi, nu=0.31, rho=0.101 lbm/in^3.
@@ -83,6 +131,8 @@ MESH_SIZE_MM = 150.0
 
 
 def main() -> None:
+    from pyNastran.bdf.bdf import BDF
+
     result = mesh_assembly_to_bdf(
         COMPONENTS,
         OUTPUT_BDF,
@@ -102,6 +152,32 @@ def main() -> None:
         "mesh_seconds": result.mesh_seconds,
         "weld_seconds": result.weld_seconds,
         "warnings": result.warnings,
+    }
+
+    bdf = BDF()
+    bdf.read_bdf(str(OUTPUT_BDF), xref=True)
+
+    n_root = add_spc_by_y_band(
+        bdf, ROOT_SPC_ID, ROOT_Y_TARGET, ROOT_Y_TOLERANCE, components="123"
+    )
+    n_second = add_spc_by_y_band(
+        bdf, SECOND_SPC_ID, SECOND_Y_TARGET, SECOND_Y_TOLERANCE, components="3"
+    )
+    bdf.add_spcadd(SPCADD_ID, [ROOT_SPC_ID, SECOND_SPC_ID])
+    load_summary = add_uniform_z_load(bdf, LOAD_ID, TOTAL_LOAD_Z_LBF)
+
+    OUTPUT_BDF_WITH_BC.parent.mkdir(parents=True, exist_ok=True)
+    bdf.write_bdf(str(OUTPUT_BDF_WITH_BC), size=8, enddata=True)
+
+    summary["boundary_conditions"] = {
+        "bdf_path": str(OUTPUT_BDF_WITH_BC),
+        "root_spc_id": ROOT_SPC_ID,
+        "root_n_nodes": n_root,
+        "second_spc_id": SECOND_SPC_ID,
+        "second_n_nodes": n_second,
+        "spcadd_id": SPCADD_ID,
+        "load_id": LOAD_ID,
+        "load_summary": load_summary,
     }
     print(json.dumps(summary, indent=2))
 
