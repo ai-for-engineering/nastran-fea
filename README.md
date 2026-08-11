@@ -44,6 +44,22 @@ instead of by running scripts by hand. Start it (stdio transport):
 
 Point an MCP client (e.g. Claude Desktop/Code config) at that command. Tools:
 
+- `mesh_geometry_to_bdf(geometry_path, output_bdf_path, mesh_size, thickness,
+  material_e, material_g, material_nu, ...)` -- pre-processing: meshes a
+  single IGES/STEP midsurface component (Gmsh's OpenCASCADE import + 2D
+  quad-dominant meshing) into a BDF with GRID/CQUAD4/CTRIA3 + one PSHELL +
+  one MAT1, via pyNastran. Scoped deliberately to **one geometry file at a
+  time** -- see `scripts/geometry_to_bdf.py`'s module docstring for why a
+  full multi-part assembly merge (e.g. the NASA CRM wingbox's separate
+  ribs/spars/skins/stringers IGES files, gluing them into one topologically
+  connected mesh) is a documented gap rather than attempted here: a direct
+  test of the underlying OpenCASCADE boolean-fragment operation, on just 2
+  of those 5 files, took 234 seconds. `unit_scale` handles the geometry
+  file's own units not necessarily matching the target BDF's (the NASA CRM
+  IGES midsurfaces are in mm; the project's existing NASA CRM BDF is in
+  inches). No SPC/LOAD are written -- a freshly meshed single component has
+  no assembly context to invent a physically meaningful boundary condition
+  from; add those afterward before `run_solver`.
 - `load_model(bdf_path)` -- parses with pyNastran, returns node/element/
   property/material counts and any parse warnings. A deck that fails to
   parse (e.g. OptiStruct-style, no SOL/CEND) comes back as a structured
