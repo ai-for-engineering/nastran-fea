@@ -17,15 +17,18 @@ Two things ruled that in over a full multi-part assembly:
 2. NASA's own CRM wingbox IGES download splits the assembly into five
    separate per-component files (ribs/spars/skins/stringers/rib caps).
    Meshing them independently, as this module does, leaves them
-   topologically *disconnected* at their real-world shared edges --
-   ribs don't share nodes with the spars they're riveted to. The correct
-   fix is an OpenCASCADE boolean fragment/glue across all five files
-   before meshing, but that's a genuinely slow and CAD-fragile operation
-   on this real geometry: a direct test (ribs + spars only, 91 of the
-   full assembly's ~470 faces) took 234 seconds for just those two. Doing
-   that for all five components, robustly, is out of scope here and
-   logged as a known gap -- the same honest-caveat treatment this project
-   already gives the MYSTRAN CBEAM/PSHELL-MID4 solver gaps (see README).
+   topologically *disconnected* at their real-world shared edges -- ribs
+   don't share nodes with the spars they're riveted to. Fixing that is
+   `assemble_wingbox_geometry.py`'s job, and it deliberately does NOT
+   fix it at the CAD level (an OpenCASCADE boolean fragment across all
+   five files before meshing): that was the first approach tried, and it
+   hit real, reproducible tooling limits on this actual geometry --
+   234 seconds to fragment just 2 of the 5 files, and the fragment
+   result contained sub-micron sliver edges (as short as 1.6e-5 mm) that
+   `gmsh.model.occ.healShapes()` could not reliably clean up (silently
+   ineffective at small tolerances, outright crashing at larger ones).
+   See that module's docstring for the node-welding approach used
+   instead.
 
 Units: Gmsh meshes in the geometry file's own native units (the NASA CRM
 IGES midsurfaces are in mm, while the project's existing NASA CRM BDF is
@@ -67,6 +70,92 @@ class GeometryToBdfResult:
     pshell_id: int
     material: MaterialProperties
     warnings: list[str] = field(default_factory=list)
+
+
+def _mesh_single_geometry(
+    geometry_path: Path, mesh_size: float, quad_dominant: bool
+) -> tuple[Any, Any, Any, Any, Any, bool]:
+    """Import one geometry file into its own gmsh session, mesh it in 2D,
+    and return the raw (node_tags, node_coords, elem_types, elem_tags_list,
+    elem_node_tags_list, used_quad_dominant) gmsh gives back -- shared by
+    both mesh_geometry_to_bdf (single component) and
+    assemble_wingbox_geometry.mesh_assembly_to_bdf (multiple components,
+    meshed independently and node-welded afterward rather than merged at
+    the CAD level -- see that module's docstring for why).
+
+    Quad recombination (`quad_dominant=True`) can fail outright on a real
+    geometry with an error unrelated to mesh quality ("1D mesh cannot be
+    divided by 2") -- confirmed reproducible and purely a recombination
+    *parity* issue, not degenerate/unhealable geometry as first suspected:
+    the exact same NASA CRM wingbox `CRM_ribs.igs` file meshes cleanly at
+    `mesh_size=150` but fails this way at `mesh_size=200` with recombination
+    on, while triangulating fine (no recombination) at *both* sizes -- and
+    `CRM_stringers.igs`, initially misdiagnosed as having inherent
+    unfixable degenerate geometry (all 3 available stringer file variants
+    failed this exact way with recombination on), turned out to mesh
+    cleanly the moment recombination was disabled. So: if recombination
+    fails, this retries once with it off (triangles only) rather than
+    raising or silently excluding the geometry -- `used_quad_dominant`
+    tells the caller which actually happened, so it can warn rather than
+    hide a component that quietly downgraded to triangles.
+
+    Raises:
+        FileNotFoundError: geometry_path doesn't exist.
+        ValueError: the imported geometry has no 2D surfaces to mesh.
+    """
+    import gmsh
+
+    if not geometry_path.is_file():
+        raise FileNotFoundError(f"geometry file not found: {geometry_path}")
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add(geometry_path.stem)
+        gmsh.model.occ.importShapes(str(geometry_path))
+        gmsh.model.occ.synchronize()
+
+        surfaces = gmsh.model.getEntities(2)
+        if not surfaces:
+            raise ValueError(
+                f"no 2D surfaces found in {geometry_path} -- expected a "
+                "midsurface/shell geometry, got a solid-only or empty file"
+            )
+
+        gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size / 5.0)
+
+        used_quad_dominant = quad_dominant
+        if quad_dominant:
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)
+        try:
+            gmsh.model.mesh.generate(2)
+        except Exception:
+            if not quad_dominant:
+                raise
+            gmsh.model.mesh.clear()
+            gmsh.option.setNumber("Mesh.RecombineAll", 0)
+            gmsh.model.mesh.generate(2)
+            used_quad_dominant = False
+
+        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
+        elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(2)
+        return (
+            node_tags,
+            node_coords,
+            elem_types,
+            elem_tags_list,
+            elem_node_tags_list,
+            used_quad_dominant,
+        )
+    finally:
+        # gmsh keeps process-global state (gmsh.initialize/finalize aren't
+        # reentrant-safe across concurrent calls) -- always tear down even
+        # if meshing raised, so a caller retrying in the same process (e.g.
+        # the MCP server, one long-lived process across many tool calls)
+        # doesn't inherit a half-torn-down model.
+        gmsh.finalize()
 
 
 def mesh_geometry_to_bdf(
@@ -116,48 +205,23 @@ def mesh_geometry_to_bdf(
         FileNotFoundError: geometry_path doesn't exist.
         ValueError: the imported geometry has no 2D surfaces to mesh.
     """
-    import gmsh
     from pyNastran.bdf.bdf import BDF
 
     geometry_path = Path(geometry_path)
     output_bdf_path = Path(output_bdf_path)
-    if not geometry_path.is_file():
-        raise FileNotFoundError(f"geometry file not found: {geometry_path}")
     if isinstance(material, dict):
         material = MaterialProperties(**material)
 
     warnings: list[str] = []
-
-    gmsh.initialize()
-    try:
-        gmsh.option.setNumber("General.Terminal", 0)
-        gmsh.model.add(geometry_path.stem)
-        gmsh.model.occ.importShapes(str(geometry_path))
-        gmsh.model.occ.synchronize()
-
-        surfaces = gmsh.model.getEntities(2)
-        if not surfaces:
-            raise ValueError(
-                f"no 2D surfaces found in {geometry_path} -- expected a "
-                "midsurface/shell geometry, got a solid-only or empty file"
-            )
-
-        gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size / 5.0)
-        if quad_dominant:
-            gmsh.option.setNumber("Mesh.RecombineAll", 1)
-            gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)
-        gmsh.model.mesh.generate(2)
-
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(2)
-    finally:
-        # gmsh keeps process-global state (gmsh.initialize/finalize aren't
-        # reentrant-safe across concurrent calls) -- always tear down even
-        # if meshing raised, so a caller retrying in the same process (e.g.
-        # the MCP server, one long-lived process across many tool calls)
-        # doesn't inherit a half-torn-down model.
-        gmsh.finalize()
+    node_tags, node_coords, elem_types, elem_tags_list, elem_node_tags_list, used_quad_dominant = (
+        _mesh_single_geometry(geometry_path, mesh_size, quad_dominant)
+    )
+    if quad_dominant and not used_quad_dominant:
+        warnings.append(
+            "quad recombination failed on this geometry (a real, "
+            "reproducible gmsh limitation -- see _mesh_single_geometry's "
+            "docstring), fell back to an all-triangle mesh"
+        )
 
     xyz = node_coords.reshape(-1, 3) * unit_scale
 

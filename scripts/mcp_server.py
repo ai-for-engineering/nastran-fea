@@ -12,6 +12,14 @@ Tools:
         scripts/geometry_to_bdf.py's docstring for why a full multi-part
         assembly merge is a documented gap, not attempted here.
 
+    mesh_assembly_to_bdf(components, output_bdf_path, mesh_size,
+                         material_e, material_g, material_nu, ...)
+        The multi-part follow-up: meshes several IGES/STEP components
+        independently and welds their nodes together at shared
+        interfaces into one connected BDF, instead of a CAD-level merge
+        (tried first, abandoned after hitting real tooling limits -- see
+        scripts/assemble_wingbox_geometry.py's docstring).
+
     load_model(bdf_path)
         Parse a BDF with pyNastran and return summary counts, so a caller can
         sanity-check a deck before doing anything else. A deck that fails to
@@ -77,6 +85,10 @@ from typing import Any
 # client launching it with an absolute path, etc).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from assemble_wingbox_geometry import (  # noqa: E402
+    Component as _Component,
+    mesh_assembly_to_bdf as _mesh_assembly_to_bdf,
+)
 from geometry_to_bdf import (  # noqa: E402
     MaterialProperties,
     mesh_geometry_to_bdf as _mesh_geometry_to_bdf,
@@ -173,6 +185,113 @@ def mesh_geometry_to_bdf(
         "bounding_box": result.bounding_box,
         "pshell_id": result.pshell_id,
         "material_id": result.material.mid,
+        "warnings": result.warnings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# mesh_assembly_to_bdf
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def mesh_assembly_to_bdf(
+    components: list[dict[str, Any]],
+    output_bdf_path: str,
+    mesh_size: float,
+    material_e: float,
+    material_g: float,
+    material_nu: float,
+    material_rho: float = 0.0,
+    material_mid: int = 1,
+    unit_scale: float = 1.0,
+    quad_dominant: bool = True,
+    merge_tolerance: float | None = None,
+) -> dict[str, Any]:
+    """Mesh multiple IGES/STEP midsurface components independently and
+    weld their nodes together at shared interfaces, into one connected
+    BDF -- the multi-part follow-up to mesh_geometry_to_bdf.
+
+    Why welding, not a CAD-level merge: an OpenCASCADE boolean fragment
+    across all component files (the textbook approach) was tried first
+    against the real NASA CRM wingbox geometry and abandoned after hitting
+    real, reproducible tooling limits -- 234s to fragment just 2 of 5
+    files, and the result contained sub-micron sliver edges that
+    `gmsh.model.occ.healShapes()` could not reliably clean up (silently
+    ineffective at small tolerances, crashing outright at larger ones).
+    See `scripts/assemble_wingbox_geometry.py`'s module docstring for the
+    full story. This tool instead meshes each component independently
+    (`mesh_geometry_to_bdf`'s own proven single-component path) and welds
+    nodes from different components within `merge_tolerance` of each
+    other -- confirmed against the real, full 5-component NASA CRM wingbox
+    assembly (ribs/spars/skins/rib_caps/stringers): 71,628 nodes, 63,792
+    CQUAD4 + 15,455 CTRIA3, 14,758 welded node pairs, ~13s wall time,
+    bounding box within 0.13% of the real solved model's span. Stringers
+    only meshed after `_mesh_single_geometry`'s automatic quad-
+    recombination fallback (see its docstring) -- initially misdiagnosed
+    as having inherent unfixable degenerate geometry (all 3 available
+    stringer file variants failed the same way), it turned out to be a
+    recombination *parity* failure unrelated to geometry quality, and
+    meshes cleanly as an all-triangle CTRIA3 mesh once recombination is
+    disabled for that component; a `warnings` entry says so rather than
+    silently downgrading it.
+
+    Args:
+        components: list of {"name": str, "geometry_path": str,
+            "thickness": float} -- one entry per geometry file to merge,
+            each getting its own PSHELL (thickness already in the
+            *output* BDF's units).
+        output_bdf_path: where to write the resulting BDF.
+        mesh_size: target element size, in the geometry files' own native
+            units (all components must share one unit system).
+        material_e/material_g/material_nu/material_rho: the single shared
+            MAT1 every component's PSHELL references.
+        material_mid: material ID for that shared MAT1.
+        unit_scale: multiplies every meshed node coordinate before
+            writing (e.g. 1/25.4 for a millimeter geometry -> inch BDF).
+        quad_dominant: ask Gmsh to recombine triangles into quads where
+            it can.
+        merge_tolerance: nodes from different components within this
+            distance (geometry files' native units, NOT unit_scale'd) are
+            welded into one GRID. Defaults to mesh_size / 4.
+
+    Returns a summary: node/CQUAD4/CTRIA3 counts (overall and per
+    component -- watch for a component reading 0 elements, a sign its
+    geometry silently failed to contribute anything), welded pair count
+    (0 with more than one component is itself a warning -- see
+    `warnings` -- since it means nothing actually touched), the meshed
+    bounding box, and mesh/weld timing. Like mesh_geometry_to_bdf, the
+    output BDF has no SPC/LOAD -- add those before run_solver.
+    """
+    material = MaterialProperties(
+        mid=material_mid, e=material_e, g=material_g, nu=material_nu, rho=material_rho
+    )
+    parsed_components = [
+        _Component(name=c["name"], geometry_path=c["geometry_path"], thickness=c["thickness"])
+        for c in components
+    ]
+    result = _mesh_assembly_to_bdf(
+        parsed_components,
+        output_bdf_path=output_bdf_path,
+        mesh_size=mesh_size,
+        material=material,
+        unit_scale=unit_scale,
+        quad_dominant=quad_dominant,
+        merge_tolerance=merge_tolerance,
+    )
+    return {
+        "success": result.success,
+        "bdf_path": str(result.bdf_path),
+        "counts": {
+            "nodes": result.n_nodes,
+            "cquad4": result.n_cquad4,
+            "ctria3": result.n_ctria3,
+            "welded_pairs": result.n_welded_pairs,
+        },
+        "counts_by_component": result.counts_by_component,
+        "bounding_box": result.bounding_box,
+        "pid_by_component": result.pid_by_component,
+        "material_id": result.material.mid,
+        "timing": {"mesh_seconds": result.mesh_seconds, "weld_seconds": result.weld_seconds},
         "warnings": result.warnings,
     }
 
