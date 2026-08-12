@@ -53,6 +53,22 @@ rationale here, just the reminder:
   README's NASA CRM case-study section.
 - pyNastranGUI's dependency versions (VTK pin, etc.) are documented in
   README's GUI section -- check there before reinstalling anything.
+- Gmsh's OpenCASCADE boolean fragment (`gmsh.model.occ.fragment`) -- needed
+  to glue multiple independently-authored midsurface CAD files into one
+  topologically connected mesh (shared nodes at real component
+  interfaces) -- is genuinely slow on real aircraft-structure geometry,
+  not just large synthetic models: fragmenting just 2 of the NASA CRM
+  wingbox's 5 component IGES files (ribs + spars, 91 of ~470 total faces)
+  took 234 seconds. Budget for this (or avoid it, per
+  `scripts/geometry_to_bdf.py`'s current single-component scope) before
+  assuming a full-assembly geometry pipeline is a quick add.
+- A geometry file's own units and a target BDF's units are not guaranteed
+  to match, and nothing about the file format says which was used. The
+  NASA CRM wingbox's IGES midsurfaces are in mm; its own existing solved
+  BDF is in inches -- confirmed by cross-checking a meshed IGES file's
+  bounding box (mm) against the real deck's (inches) after applying a
+  1/25.4 `unit_scale`, which landed the span within 0.05 in of the real
+  model's 1,151.3 in. Always verify with a real dimension, don't assume.
 - Never invoke `pyNastran.gui.gui` as a raw shell command bounded only by a
   generic command-timeout -- that kind of timeout detaches/backgrounds the
   wait, it doesn't kill the process, so a slow render leaks a live Qt
@@ -118,10 +134,20 @@ Things with no README equivalent (code-level, not usage-level):
 - `scripts/run_solver.py` -- generic MYSTRAN invocation wrapper (see
   Gotchas); not tied to any specific model
 - `scripts/mcp_server.py` -- MCP server wrapping the pipeline
-  (load_model/patch_case_control/run_solver/get_max_stress/
-  render_model_view/render_stress_contour) as tool calls; see README's MCP
-  server section. Imports `run_solver.py` and `ses_groups.py` rather than
-  duplicating them. `scripts/test_mcp_server.py` has the smoke tests.
+  (mesh_geometry_to_bdf/load_model/patch_case_control/run_solver/
+  get_max_stress/render_model_view/render_stress_contour) as tool calls;
+  see README's MCP server section. Imports `geometry_to_bdf.py`,
+  `run_solver.py`, and `ses_groups.py` rather than duplicating them.
+  `scripts/test_mcp_server.py` has the smoke tests.
+- `scripts/geometry_to_bdf.py` -- pre-processing: Gmsh (OpenCASCADE) IGES/
+  STEP import + 2D meshing of a single midsurface component into a
+  GRID/CQUAD4/CTRIA3 + PSHELL + MAT1 BDF. Deliberately one-component-in,
+  one-property-out -- see its module docstring for why merging multiple
+  independently-authored midsurface files (e.g. NASA CRM's ribs/spars/
+  skins/stringers split) into one connected mesh is a documented gap, not
+  attempted. `scripts/test_geometry_to_bdf.py` has the tests, using a
+  synthetic on-the-fly STEP rectangle rather than the real (gitignored)
+  NASA CRM IGES files.
 - `scripts/ses_groups.py` -- parser for Patran/HyperMesh `.ses` session
   files' named element-group definitions (NOT Nastran format -- some case
   studies ship one as a bonus alongside the actual deck). See its docstring

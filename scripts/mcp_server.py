@@ -4,6 +4,14 @@ MCP server exposing the wingbox pipeline (load -> patch case control -> solve
 workflow conversationally instead of by running scripts by hand.
 
 Tools:
+    mesh_geometry_to_bdf(geometry_path, output_bdf_path, mesh_size, thickness,
+                         material_e, material_g, material_nu, ...)
+        Mesh a single IGES/STEP midsurface component (Gmsh + OpenCASCADE)
+        into a BDF with GRID/CQUAD4/CTRIA3 + one PSHELL + one MAT1 --
+        scoped to one geometry file at a time; see
+        scripts/geometry_to_bdf.py's docstring for why a full multi-part
+        assembly merge is a documented gap, not attempted here.
+
     load_model(bdf_path)
         Parse a BDF with pyNastran and return summary counts, so a caller can
         sanity-check a deck before doing anything else. A deck that fails to
@@ -69,6 +77,10 @@ from typing import Any
 # client launching it with an absolute path, etc).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from geometry_to_bdf import (  # noqa: E402
+    MaterialProperties,
+    mesh_geometry_to_bdf as _mesh_geometry_to_bdf,
+)
 from run_solver import (  # noqa: E402
     DEFAULT_SOLVER_PATH,
     DEFAULT_TIMEOUT_S,
@@ -79,6 +91,90 @@ from ses_groups import parse_ses_groups  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 mcp = FastMCP("nastran-fea-wingbox")
+
+
+# ---------------------------------------------------------------------------
+# mesh_geometry_to_bdf
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def mesh_geometry_to_bdf(
+    geometry_path: str,
+    output_bdf_path: str,
+    mesh_size: float,
+    thickness: float,
+    material_e: float,
+    material_g: float,
+    material_nu: float,
+    material_rho: float = 0.0,
+    material_mid: int = 1,
+    unit_scale: float = 1.0,
+    quad_dominant: bool = True,
+) -> dict[str, Any]:
+    """Mesh a single IGES/STEP midsurface component into a Nastran BDF
+    (GRID + CQUAD4/CTRIA3 + one PSHELL + one MAT1), via Gmsh's OpenCASCADE
+    import/meshing and pyNastran's card writer.
+
+    This is scoped to **one geometry file in, one property/material out**
+    -- see scripts/geometry_to_bdf.py's module docstring for why: Gmsh's
+    own IGES/STEP export has no property/material cards at all, and
+    gluing multiple independently-authored midsurface files (e.g. the
+    NASA CRM wingbox's separate ribs/spars/skins/stringers IGES files)
+    into one topologically connected mesh needs a real OpenCASCADE
+    boolean-fragment operation that measured 234s for just 2 of those 5
+    files -- out of scope here, a documented gap rather than a silent
+    shortcut.
+
+    Args:
+        geometry_path: an .iges/.igs/.step/.stp file.
+        output_bdf_path: where to write the resulting BDF.
+        mesh_size: target element size, in geometry_path's own native
+            units (Gmsh meshes before unit_scale is applied).
+        thickness: PSHELL thickness, already in the *output* BDF's units.
+        material_e/material_g/material_nu/material_rho: MAT1 fields.
+        material_mid: material/property ID (same ID used for both the
+            MAT1 and the single PSHELL every element references).
+        unit_scale: multiplies every meshed node coordinate before
+            writing -- e.g. 1/25.4 to turn a millimeter geometry file into
+            an inch-based BDF (matching the NASA CRM wingbox's own units).
+        quad_dominant: ask Gmsh to recombine triangles into quads
+            (CQUAD4) where it can; leftover CTRIA3 where it can't is not
+            an error.
+
+    Returns a summary: node/CQUAD4/CTRIA3 counts, the meshed (already
+    unit_scale'd) bounding box, and any warnings (e.g. unsupported
+    higher-order element types Gmsh produced that had to be skipped).
+    The output BDF has no SPC/LOAD -- add those (e.g. by hand, or by
+    borrowing set IDs from a comparable solved case study) before
+    run_solver; a freshly meshed single component has no assembly context
+    to invent a physically meaningful boundary condition from.
+    """
+    material = MaterialProperties(
+        mid=material_mid, e=material_e, g=material_g, nu=material_nu, rho=material_rho
+    )
+    result = _mesh_geometry_to_bdf(
+        geometry_path=geometry_path,
+        output_bdf_path=output_bdf_path,
+        mesh_size=mesh_size,
+        thickness=thickness,
+        material=material,
+        unit_scale=unit_scale,
+        quad_dominant=quad_dominant,
+        pshell_id=material_mid,
+    )
+    return {
+        "success": result.success,
+        "bdf_path": str(result.bdf_path),
+        "counts": {
+            "nodes": result.n_nodes,
+            "cquad4": result.n_cquad4,
+            "ctria3": result.n_ctria3,
+        },
+        "bounding_box": result.bounding_box,
+        "pshell_id": result.pshell_id,
+        "material_id": result.material.mid,
+        "warnings": result.warnings,
+    }
 
 
 # ---------------------------------------------------------------------------
