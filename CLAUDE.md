@@ -101,6 +101,17 @@ rationale here, just the reminder:
   bounding box (mm) against the real deck's (inches) after applying a
   1/25.4 `unit_scale`, which landed the span within 0.05 in of the real
   model's 1,151.3 in. Always verify with a real dimension, don't assume.
+- NASA's downloadable IGES geometry for the CRM wingbox is not a complete
+  structural description -- confirmed by direct visual comparison (see the
+  blog's "Rebuilding the wingbox from geometry alone" section):
+  `CRM_spars.igs` contains only the 3 main continuous spanwise spar webs
+  (front/mid/rear). The original FE deck's "ShearWebs" group (8,880
+  elements -- more than the main spars themselves) is a dense internal
+  comb of rib-spaced shear ties that has no counterpart anywhere in the
+  IGES download. A from-geometry rebuild will be missing this internal
+  stiffening structure regardless of meshing/welding quality -- verified
+  from two different camera angles before concluding it's a real gap, not
+  an occlusion artifact.
 - Never invoke `pyNastran.gui.gui` as a raw shell command bounded only by a
   generic command-timeout -- that kind of timeout detaches/backgrounds the
   wait, it doesn't kill the process, so a slow render leaks a live Qt
@@ -191,6 +202,26 @@ Things with no README equivalent (code-level, not usage-level):
   fixes. Validated end to end against the real, full 5-component NASA CRM
   wingbox IGES download. `scripts/test_assemble_wingbox_geometry.py` has
   the tests, synthetic (adjacent/disjoint rectangles) for speed/CI.
+- `scripts/build_nasa_crm_from_geometry.py` -- the NASA CRM wingbox's own
+  case-specific driver script wiring `assemble_wingbox_geometry.py` +
+  `reconstruct_boundary_conditions.py` + `run_solver.py` together end to
+  end (mesh -> weld -> real per-group properties -> BC/GVW load -> case
+  control -> solve). Validated: MYSTRAN solves the result with zero
+  `*ERROR`/`FATAL` messages. See `case_studies/nasa_crm_wingbox/README.md`'s
+  "Rebuilding this model from geometry alone" section for the full story
+  and results, and the blog post's matching section for a side-by-side
+  visual inspection against the original.
+- `scripts/reconstruct_boundary_conditions.py` -- generic (not NASA-CRM-
+  specific) helpers for a from-geometry rebuild whose GRID IDs don't
+  correspond to any original deck: `add_spc_by_y_band` fixes nodes within
+  a Y-tolerance of a target station, `add_uniform_z_load` distributes a
+  target *total* resultant force evenly (not a copied per-node value)
+  across however many nodes the rebuilt mesh actually has.
+- `scripts/compare_rebuilt_vs_original.py` -- physical-level (not node-by-
+  node -- meaningless across different meshes) comparison of a rebuilt
+  model against a real solved reference: tip displacement, peak stress by
+  component, with `percent_difference`/`check_reaction_balance` as pure,
+  tested helper functions.
 - `scripts/ses_groups.py` -- parser for Patran/HyperMesh `.ses` session
   files' named element-group definitions (NOT Nastran format -- some case
   studies ship one as a bonus alongside the actual deck). See its docstring
