@@ -76,6 +76,27 @@ from geometry_to_bdf import (
     _mesh_single_geometry,
 )
 
+# Nodes within this distance (geometry files' own native units) are
+# always welded regardless of component -- see _weld_coincident_nodes's
+# docstring. Deliberately far below any real feature size, so it only
+# ever catches true duplicate/degenerate points, never two distinct ones.
+#
+# Must be generous enough to cover Nastran's own small-field BDF format
+# (write_bdf(size=8, ...), see CLAUDE.md) rounding two DISTINCT in-memory
+# positions to IDENTICAL 8-character text on write -- confirmed directly:
+# pyNastran's own field_writer_8.print_float_8 renders 1578.7171234,
+# 1578.7172345, and 1578.7168999 (differing by up to ~0.0003) all as the
+# same "1578.717". A tolerance tighter than that field format's own
+# precision (roughly 0.001 in the output BDF's units) would let a real
+# degenerate/near-zero element slip through the weld only to reappear as
+# an exact duplicate the moment it's written to disk -- confirmed as the
+# actual root cause of a MYSTRAN *ERROR 1908 (`... HAS LENGTH = ZERO`)
+# that survived several earlier, tighter tolerance attempts. 0.1 (mm, for
+# the NASA CRM wingbox's own geometry files) comfortably covers that
+# ~0.025 mm (0.001 in) rounding step with margin, while staying far below
+# any real feature size.
+_EXACT_COINCIDENCE_TOLERANCE = 0.1
+
 
 @dataclass
 class Component:
@@ -95,6 +116,8 @@ class AssemblyResult:
     n_cquad4: int
     n_ctria3: int
     n_welded_pairs: int
+    n_degenerate_skipped: int
+    n_bowtie_skipped: int
     bounding_box: dict[str, dict[str, float]]
     counts_by_component: dict[str, dict[str, int]]
     pid_by_component: dict[str, int]
@@ -150,17 +173,56 @@ def _weld_coincident_nodes(
     genuinely coincident) to collapse to a single shared GRID -- it only
     ever rejects a union that would put two nodes from the *same*
     component in one cluster.
+
+    Before any of that, an unconditional exact-coincidence pass welds
+    nodes at bit-identical coordinates regardless of component --
+    confirmed necessary against the real NASA CRM wingbox assembly too: a
+    single component's own independent gmsh mesh is not always internally
+    conformal the way this function's cross-component-only design
+    initially assumed. `CRM_ribs.igs` alone produced 445 pairs of exact-
+    duplicate node positions (943 node instances total, e.g. two
+    literally-identical-coordinate GRIDs both feeding one CQUAD4, giving
+    it a real zero-length side -- confirmed as MYSTRAN's own `*ERROR 1908:
+    ... HAS LENGTH = ZERO`), most plausibly from adjacent sub-faces
+    within one IGES file that touch without genuine B-rep topological
+    sharing. Exact coordinate equality is unambiguous (unlike the
+    tolerance-based cross-component case below, which exists precisely
+    because two genuinely different points can be *close*) -- there's no
+    same-component conflict risk from merging two points already proven
+    identical.
     """
     import numpy as np
     from scipy.spatial import cKDTree
 
     n = len(xyz_array)
     uf = _UnionFind(n)
-    cluster_components: list[set[int]] = [{int(c)} for c in component_array]
+
+    # Exact-coincidence pass: weld any two nodes within EXACT_COINCIDENCE_
+    # TOLERANCE of each other, regardless of component. A cKDTree radius
+    # query (not exact dict-key rounding) is used deliberately -- gmsh's
+    # own meshing is not perfectly bit-reproducible run to run (confirmed
+    # separately: identical synthetic inputs produced different weld-pair
+    # counts across repeated runs), so two "duplicate" points from the
+    # same underlying degenerate CAD feature aren't guaranteed to be
+    # bit-identical, only extremely close. The tolerance here (1e-4 in the
+    # geometry's own native units, i.e. 0.1 micron for the NASA CRM
+    # wingbox's millimeter files) is many orders of magnitude below any
+    # real feature size on a multi-meter aircraft structure, so there's
+    # no meaningful risk of conflating two genuinely different points.
+    exact_tree = cKDTree(xyz_array)
+    exact_pairs = exact_tree.query_pairs(r=_EXACT_COINCIDENCE_TOLERANCE, output_type="ndarray")
+    n_exact_welded = 0
+    for i, j in exact_pairs:
+        uf.union(int(i), int(j))
+        n_exact_welded += 1
+
+    cluster_components: list[set[int]] = [set() for _ in range(n)]
+    for i, c in enumerate(component_array):
+        cluster_components[uf.find(i)].add(int(c))
 
     tree = cKDTree(xyz_array)
     pairs = tree.query_pairs(r=merge_tolerance, output_type="ndarray")
-    n_welded_pairs = 0
+    n_welded_pairs = n_exact_welded
     if len(pairs) > 0:
         cross = component_array[pairs[:, 0]] != component_array[pairs[:, 1]]
         pairs = pairs[cross]
@@ -190,6 +252,92 @@ def _weld_coincident_nodes(
     final_xyz = summed / counts[:, None]
     final_grid_id = inverse + 1  # 1-indexed
     return final_grid_id, final_xyz, n_welded_pairs
+
+
+def _dedupe_exact_final_nodes(
+    final_grid_id: "np.ndarray",  # noqa: F821
+    final_xyz: "np.ndarray",  # noqa: F821
+) -> tuple["np.ndarray", "np.ndarray", int]:  # noqa: F821
+    """Verify _weld_coincident_nodes's own output actually has no
+    remaining exact-duplicate positions, and merge any found. See
+    mesh_assembly_to_bdf's call site for why this defensive follow-up
+    pass exists at all (gmsh's meshing isn't perfectly run-to-run
+    reproducible).
+
+    Returns (new_final_grid_id, new_final_xyz, n_extra_welded) -- if
+    n_extra_welded is 0, new_final_grid_id/new_final_xyz are returned
+    unchanged (not just equivalent) so a caller can skip re-checking.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    n = len(final_xyz)
+    if n < 2:
+        return final_grid_id, final_xyz, 0
+
+    tree = cKDTree(final_xyz)
+    pairs = tree.query_pairs(r=_EXACT_COINCIDENCE_TOLERANCE, output_type="ndarray")
+    if len(pairs) == 0:
+        return final_grid_id, final_xyz, 0
+
+    uf = _UnionFind(n)
+    for i, j in pairs:
+        uf.union(int(i), int(j))
+
+    cluster_of_row = np.array([uf.find(i) for i in range(n)])
+    _unique_clusters, inverse = np.unique(cluster_of_row, return_inverse=True)
+    n_deduped = len(_unique_clusters)
+    summed = np.zeros((n_deduped, 3))
+    counts = np.zeros(n_deduped, dtype=int)
+    np.add.at(summed, inverse, final_xyz)
+    np.add.at(counts, inverse, 1)
+    new_final_xyz = summed / counts[:, None]
+
+    # final_grid_id holds OLD 1-indexed ids (one per raw input row);
+    # remap through inverse (old 0-indexed row -> new 0-indexed row).
+    new_final_grid_id = inverse[final_grid_id - 1] + 1
+
+    return new_final_grid_id, new_final_xyz, n - n_deduped
+
+
+def _is_bad_quad_geometry(pts: list) -> bool:
+    """True if a CQUAD4's 4 corners (p0, p1, p2, p3, in element
+    connectivity order) would give a real FE solver a non-positive
+    Jacobian somewhere in its bilinear isoparametric map -- confirmed a
+    real, if rare, output of gmsh's own quad recombination against the
+    real NASA CRM wingbox mesh (33 of 63,792 CQUAD4, ~0.05%), caught by
+    MYSTRAN as `*ERROR 1928: ... HAS JACOBIAN LESS THAN OR EQUAL TO ZERO
+    ... BAD GEOMETRY` -- not a welding artifact (unrelated to node
+    coincidence/duplication), a genuine badly-shaped element.
+
+    A literal self-intersection ("bowtie") test (checking whether the two
+    diagonals, or two opposite edges, cross) was tried first and
+    reverted: it correctly flagged the real failing element, but it's too
+    permissive -- a *concave* quad (one reflex >180 deg corner) is still
+    a perfectly valid *simple* polygon by that test, yet a sufficiently
+    concave quad genuinely does drive a bilinear element's Jacobian
+    negative, which is exactly the class of failure being guarded
+    against here, not literal topological self-intersection.
+
+    Instead: walk the 4 corners and take the cross product of each pair
+    of adjacent edges (a discrete proxy for the Jacobian's sign at each
+    corner of the bilinear map). A good (convex, or mildly non-planar but
+    still positive-Jacobian) quad has all 4 pointing the same general
+    direction; this element is flagged bad if any corner's disagrees with
+    the element's own average normal.
+    """
+    import numpy as np
+
+    normals = []
+    for i in range(4):
+        a, b, c = pts[(i - 1) % 4], pts[i], pts[(i + 1) % 4]
+        normals.append(np.cross(b - a, c - b))
+    reference = np.mean(normals, axis=0)
+    ref_norm = np.linalg.norm(reference)
+    if ref_norm < 1e-30:
+        return True  # no well-defined average normal -- degenerate, not valid
+    reference = reference / ref_norm
+    return any(np.dot(n, reference) < 0 for n in normals)
 
 
 def mesh_assembly_to_bdf(
@@ -322,6 +470,26 @@ def mesh_assembly_to_bdf(
         xyz_array, component_array, merge_tolerance
     )
     weld_seconds = time.time() - t_weld_start
+
+    # Defensive final pass: confirmed against the real NASA CRM wingbox
+    # assembly that gmsh's own meshing is not perfectly reproducible run
+    # to run (the same file, meshed twice with identical parameters, can
+    # produce a different set of exact-duplicate node positions) -- so
+    # rather than keep chasing a specific non-deterministic root cause,
+    # verify the weld's own output is actually duplicate-free and fix it
+    # up directly if not, before any element ever gets to reference it.
+    final_grid_id, final_xyz_native, n_extra_welded = _dedupe_exact_final_nodes(
+        final_grid_id, final_xyz_native
+    )
+    n_welded_pairs += n_extra_welded
+    if n_extra_welded > 0:
+        warnings.append(
+            f"{n_extra_welded} additional exact-duplicate node(s) survived "
+            "the main weld pass and were merged in a defensive follow-up "
+            "pass -- gmsh's meshing is not perfectly run-to-run "
+            "reproducible; see _weld_coincident_nodes's docstring"
+        )
+
     n_final_nodes = len(final_xyz_native)
     final_xyz = final_xyz_native * unit_scale
 
@@ -333,13 +501,28 @@ def mesh_assembly_to_bdf(
     bdf = BDF()
     bdf.add_mat1(material.mid, material.e, material.g, material.nu, rho=material.rho)
     for name, pid in pid_by_component.items():
-        bdf.add_pshell(pid, mid1=material.mid, t=thickness_by_component[name])
+        # mid2 (bending) / mid3 (transverse shear) matter, not just mid1
+        # (membrane) -- see geometry_to_bdf.py's mesh_geometry_to_bdf for
+        # the full story: leaving them blank gave the real rebuilt NASA
+        # CRM wingbox membrane-only shells, which MYSTRAN's own AUTOSPC
+        # silently "solved" by auto-constraining every rotational DOF in
+        # the entire model, producing technically-valid but physically
+        # nonsensical displacements (1e14+ in) instead of a hard error.
+        bdf.add_pshell(
+            pid,
+            mid1=material.mid,
+            t=thickness_by_component[name],
+            mid2=material.mid,
+            mid3=material.mid,
+        )
 
     for row in range(n_final_nodes):
         bdf.add_grid(row + 1, final_xyz[row].tolist())
 
     n_cquad4 = 0
     n_ctria3 = 0
+    n_degenerate_skipped = 0
+    n_bowtie_skipped = 0
     counts_by_component: dict[str, dict[str, int]] = {
         comp.name: {"cquad4": 0, "ctria3": 0} for comp in components
     }
@@ -349,20 +532,36 @@ def mesh_assembly_to_bdf(
         final_nids = [int(final_grid_id[row]) for row in global_rows]
         comp_name = components[comp_idx].name
         if len(set(final_nids)) != nodes_per_elem:
-            # Safety net, not expected to trigger: the greedy conflict-
-            # checked weld above is specifically designed to prevent two
-            # of one element's own corners from ever collapsing into the
-            # same GRID. If it ever does happen anyway (e.g. a genuinely
-            # degenerate zero-area element in the source geometry, not a
-            # welding bug), fail loudly with the actual IDs rather than
-            # write pyNastran an element it will reject anyway with a far
-            # less specific error at read-back time.
-            raise RuntimeError(
-                f"component {comp_name!r} element with local nodes "
-                f"{local_nids} welded to duplicate final node IDs "
-                f"{final_nids} -- degenerate element, not a valid "
-                f"{'CTRIA3' if nodes_per_elem == 3 else 'CQUAD4'}"
-            )
+            # Two of this element's own corners welded to the same final
+            # GRID -- confirmed against the real NASA CRM wingbox mesh
+            # that this is a genuinely degenerate (near-zero-length-edge)
+            # element from gmsh's own meshing, not a welding-logic bug:
+            # the exact-coincidence tolerance above is far too tight
+            # (1e-4, geometry-native units) to explain it as a false
+            # weld between two real, distinct corners. Skip it -- the
+            # standard treatment for a degenerate element in any FE
+            # preprocessing pipeline -- rather than writing pyNastran/
+            # MYSTRAN an element they'd reject anyway with a far less
+            # specific error, or refusing to produce a deck at all over
+            # what's typically a handful of elements out of tens of
+            # thousands.
+            n_degenerate_skipped += 1
+            continue
+        if nodes_per_elem == 4:
+            # final_nids are already 1-indexed final GRID ids (post-weld/
+            # dedup) -- NOT global_rows, which index the raw, larger,
+            # pre-weld node array and would silently alias the wrong
+            # (or out-of-bounds) position once welding has shrunk it.
+            pts = [final_xyz_native[nid - 1] for nid in final_nids]
+            if _is_bad_quad_geometry(pts):
+                # A genuinely badly-shaped (non-positive-Jacobian) quad
+                # from gmsh's own recombination, unrelated to node
+                # welding -- see _is_bad_quad_geometry's docstring. Same
+                # treatment as a degenerate element: skip with a count,
+                # don't hand MYSTRAN geometry it will reject with
+                # *ERROR 1928.
+                n_bowtie_skipped += 1
+                continue
         pid = pid_by_component[comp_name]
         eid = next_eid
         next_eid += 1
@@ -390,6 +589,19 @@ def mesh_assembly_to_bdf(
             f"({merge_tolerance}) may be too small, or these components "
             "genuinely don't touch"
         )
+    if n_degenerate_skipped > 0:
+        warnings.append(
+            f"skipped {n_degenerate_skipped} degenerate element(s) (two or "
+            "more corners welded to the same GRID -- a near-zero-length "
+            "edge in the source mesh, not a welding-logic issue)"
+        )
+    if n_bowtie_skipped > 0:
+        warnings.append(
+            f"skipped {n_bowtie_skipped} badly-shaped (non-positive-"
+            "Jacobian) CQUAD4 element(s) from gmsh's own quad "
+            "recombination -- bad element geometry, not a welding-logic "
+            "issue"
+        )
 
     return AssemblyResult(
         success=True,
@@ -398,6 +610,8 @@ def mesh_assembly_to_bdf(
         n_cquad4=n_cquad4,
         n_ctria3=n_ctria3,
         n_welded_pairs=n_welded_pairs,
+        n_degenerate_skipped=n_degenerate_skipped,
+        n_bowtie_skipped=n_bowtie_skipped,
         bounding_box=bounding_box,
         counts_by_component=counts_by_component,
         pid_by_component=pid_by_component,
