@@ -59,6 +59,46 @@ than a toy example.
 span laid out horizontally, elevated just enough to reveal the root's
 multi-cell box cross-section and leading edge as depth cues.*
 
+### Model description
+
+**Units:** US customary -- inches, lbf, psi. `PARAM WTMASS 0.00259` (≈
+1/386.4 in/s²) converts the deck's lbm/in³ weight density into the
+consistent mass units MYSTRAN's mass matrix needs.
+
+**Global dimensions** (the structural wingbox, spar-to-spar -- not the
+full aircraft OML chord):
+
+| | |
+|---|---|
+| Semi-span | 1,151.3 in (29.24 m) |
+| Root chord | 291.2 in (7.40 m) |
+| Tip chord | 76.3 in (1.94 m) |
+
+**Material and properties, averaged per named group** (groups from the
+NASA download's own `.ses` file, see below):
+
+| Group | Element type | Count | Material | Avg. thickness / area | Range |
+|---|---|---|---|---|---|
+| Ribs | CQUAD4 | 6,220 | Aluminum (MAT1 1) | 0.167 in (4.24 mm) | 0.065-0.25 in |
+| Shear webs | CQUAD4 | 8,880 | Aluminum (MAT1 1) | 0.409 in (10.4 mm) | 0.10-0.75 in |
+| Skin, upper | CQUAD4/CTRIA3 | 2,322 | Aluminum (MAT1 1) | 0.159 in (4.05 mm) | 0.065-0.25 in |
+| Skin, lower | CQUAD4/CTRIA3 | 2,322 | Aluminum (MAT1 1) | 0.159 in (4.05 mm) | 0.065-0.25 in |
+| Spars (LE/TE) | CQUAD4 | 1,611 | Aluminum (MAT1 1) | 0.410 in (10.4 mm) | 0.10-0.75 in |
+| Stiffeners | CBAR | 14,134 | Aluminum (MAT1 2) | 0.584 in² area (377 mm²) | -- |
+
+MAT1 1/2 (same properties, separate IDs for shells vs. bars): E = 1.0x10⁷
+psi (69.0 GPa), G = 3.8x10⁶ psi (26.2 GPa), ν = 0.31, ρ = 0.101 lbm/in³
+(2,796 kg/m³).
+
+**Applied load and boundary conditions** (subcase "GVW" -- cross-checked
+against NASA's own FEM description in detail further down):
+
+- **SPC set 2:** 140 nodes at the root rib (Y ≈ 0) fixed in translations
+  T1/T2/T3; 56 nodes at a second rib ~120 in outboard fixed in T3 only.
+- **LOAD set 3:** 12,238 FORCE cards, 20.41 lbf each, uniform +Z, one per
+  grid point spread across every named component. Resultant: 249,777.6
+  lbf (1,111.0 kN) vertical, zero net moment.
+
 Two issues surfaced before the model would solve:
 
 **Case control translated from OptiStruct to SOL 101.** NASA's bulk data is
@@ -339,6 +379,54 @@ because every isolated group tested there (ribs, skin panels) already
 spans nearly the whole span, so the bug had nothing to bite on. Fixed with
 pyNastran's own `remove_unused` utility.
 
+#### Model description
+
+**Units:** mm / N / tonne / MPa -- stress in MPa, mass in tonne, density
+in tonne/mm³. Deliberately different from the NASA CRM wingbox's
+inches/lbf/psi, part of what makes this a real generality check rather
+than a rerun of the same numbers.
+
+**Global dimensions** (structural wingbox, spar-to-spar):
+
+| | |
+|---|---|
+| Span | 26,281.5 mm (26.28 m) |
+| Root chord | 5,959 mm (5.96 m) |
+| Tip chord | 682 mm (0.68 m) |
+
+**Material:** all aluminum, MAT1 1: E = 69,000 MPa (69.0 GPa), G = 26,538.5
+MPa (26.5 GPa), ν = 0.30, ρ = 2.7x10⁻⁹ tonne/mm³ (2,700 kg/m³).
+
+**Properties, averaged per group.** This deck ships no named-group file
+like the NASA CRM wingbox's `.ses` -- groups below are inferred
+geometrically (panel normal direction) and from the PSHELL/PBEAML property
+ID ranges the original authors already used to organize the deck (`$ Top
+skin` / `$ Lower skin` / `$ Front spar` / `$ Rear spar` comments precede
+the property block, in that order, matching the 100s/200s/300s/400s PID
+ranges 1:1):
+
+| Group | Element type | Count | Avg. thickness / area | Range |
+|---|---|---|---|---|
+| Top skin | CQUAD4/CTRIA3 | 597 | 11.20 mm | 6.95-16.35 mm |
+| Lower skin | CQUAD4/CTRIA3 | 597 | 10.81 mm | 4.73-17.05 mm |
+| Front spar | CQUAD4/CTRIA3 | 88 | 5.76 mm | 4.92-6.47 mm |
+| Rear spar | CQUAD4/CTRIA3 | 82 | 5.60 mm | 4.29-6.48 mm |
+| Ribs | CQUAD4/CTRIA3 | 1,148 | 15.00 mm (uniform) | -- |
+| Stringers | CBEAM | 1,125 | 250 mm² area (uniform) | -- |
+| Spar caps | CBEAM | 22 | 2,500 mm² area (uniform) | -- |
+
+**Applied load and boundary conditions:**
+
+- **SPC set 1:** 67 grid points across the inboard wing (Y ≈ 0-10.7 m,
+  ~41% of span) fixed in all 6 DOF -- not a single root line, consistent
+  with representing a wing-body carry-through/attachment region rather
+  than an idealized point cantilever.
+- **No static LOAD card anywhere in the deck** -- the original analysis is
+  `SOL 103` (normal modes), so there's nothing to sum a resultant from. A
+  `CONM2` lumped mass totaling 68.3 tonne (an MTOW fuel/mass distribution,
+  per the case study's source) is present but is inertial, not an applied
+  load.
+
 Solving it is a different story. MYSTRAN 19.0.0's own bundled manual
 doesn't document `CBEAM`, `PBEAM`, or `PBEAML` at all -- confirmed
 directly against the manual, not inferred from a parse error alone.
@@ -366,6 +454,50 @@ pipeline than either wing above.
 *Rendered via `render_model_view`, camera="planform" -- the same fixed
 preset tuned against the NASA CRM wingbox, applied unchanged to a wing a
 fraction of the size, from a different institution, in different units.*
+
+#### Model description
+
+**Units:** SI -- meters, N, kg, Pa.
+
+**Global dimensions:**
+
+| | |
+|---|---|
+| Span (structural, to the last meshed row) | 0.647 m |
+| Root chord | 0.266 m |
+| Tip chord | 0.070 m |
+
+The case study's own tip-displacement discussion below quotes Y = 0.685 m
+for the wingtip -- that's `RBE3` independent node 10001, a synthetic
+interpolation point slightly beyond the last physically meshed row, not
+the structural span itself; the two numbers describe different things.
+
+**Material and properties, averaged per group.** Every element carries its
+own `PCOMP` (1,574 unique layups, no two elements share one) drawn from 17
+orthotropic `MAT8` materials -- fiber-dominated plies from E11 ≈ 42 GPa up
+to 207 GPa, down to near-zero-stiffness resin/core plies. Like pCRM9, this
+deck ships no named-group file, so groups below are classified
+geometrically by panel normal direction (span/chord/thickness axis --
+the same natural-axis detection `render_model_view`'s camera logic uses):
+
+| Group | Element type | Count | Avg. total laminate thickness |
+|---|---|---|---|
+| Skin (upper + lower) | CQUAD4 | 1,260 | 5.09 mm (uniform) |
+| Ribs | CQUAD4 | 224 | 1.00 mm (uniform) |
+| Spar webs | CQUAD4 | 90 | 0.44 mm (uniform) |
+
+**Applied load and boundary conditions:**
+
+- **SPC set 3:** a single grid, node 200000 -- not a physical wing node
+  but a synthetic reference point -- fixed in all 6 DOF. An `RBE2` rigidly
+  ties it to the 30 physical grids of the root cross-section, so the wing
+  is effectively cantilevered there.
+- **Original deck (`SOL 103`):** no static load at all -- eigenvalue
+  extraction only.
+- **Derived static run** (this project's own addition, `SOL 101`, not from
+  the original authors): one `FORCE` card, 50 N in +Z at GRID 10001, the
+  `RBE3` independent node at the wingtip (see "A static run too" below for
+  why that specific point).
 
 A new tool, `get_normal_modes`, reports each extracted mode's natural
 frequency directly from the OP2's eigenvalues (`sqrt(eigenvalue) /
