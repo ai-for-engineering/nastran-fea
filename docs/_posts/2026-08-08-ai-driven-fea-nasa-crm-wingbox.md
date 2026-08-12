@@ -451,6 +451,166 @@ an unreadable render (oversized overlapping text, a badly mis-framed
 model) -- fixed by hiding everything except the actual mesh, rather than
 hardcoding yet another actor name.
 
+## Rebuilding the wingbox from geometry alone
+
+Everything above starts from NASA's own pre-built finite element deck. A
+harder, more interesting test: starting from nothing but the CAD geometry
+NASA also publishes (five separate IGES midsurface files -- ribs, spars,
+skins, rib caps, stringers) -- mesh it, assign properties, reconstruct
+boundary conditions and the GVW load, and solve, without touching the
+original FE deck at all. Does a from-CAD pipeline get *close* to a real,
+previously-validated result on an actual aircraft structure?
+
+The short version: yes, same order of magnitude, with real modeling
+differences accounting for the rest -- and getting there needed real
+engineering, not just wiring tools together. The textbook approach (an
+OpenCASCADE boolean fragment gluing all five files into one topologically
+exact mesh) was tried first and abandoned after hitting real, reproducible
+tooling limits: 234 seconds to fragment just 2 of the 5 files, and the
+result still had unhealable sub-micron sliver edges. The pipeline instead
+meshes each component independently and welds coincident nodes across
+components afterward -- an approximate, tolerance-based connection, not a
+mathematically exact shared curve.
+
+Getting from "meshes and merges" to "MYSTRAN solves it and the answer
+means something" surfaced four more real bugs. The one that mattered
+most: `PSHELL` cards missing `MID2` (bending material) gave the shells
+membrane-only stiffness -- MYSTRAN's own `AUTOSPC` found literally every
+rotational DOF in the ~70,000-node model singular and silently
+auto-constrained all of them, "solving" cleanly with displacements up to
+~1e14 in. A technically-valid, physically meaningless answer that a less
+careful check would have reported as a working rebuild. Full technical
+detail, including the other three bugs, is in the
+[repo's issue/PR history](https://github.com/ai-for-engineering/nastran-fea/issues/47)
+and `case_studies/nasa_crm_wingbox/README.md`.
+
+### Results
+
+| | Rebuilt | Original |
+|---|---|---|
+| Nodes | 70,606 | 13,878 |
+| Elements | 79,053 | 35,489 |
+| Tip displacement | 93.3 in | 159.7 in (-41.6%) |
+| Peak von Mises, Ribs | 79,008 psi | 17,884 psi (+341.8%) |
+| Peak von Mises, Spars | 88,450 psi | 34,046.9 psi (+159.8%) |
+| Peak von Mises, Skins | 80,992 psi | 39,983.7 psi (+102.6%) |
+| Peak von Mises, Stringers | *excluded, see below* | 32,980.1 psi (CBAR) |
+
+Stringers are excluded from the numeric comparison, not silently cleaned
+up: it's the least reliable component in this rebuild by construction
+(the one component where quad recombination failed and fell back to an
+all-triangle mesh, a *back-calculated* rather than measured thickness,
+and the sole owner of every one of the rebuild's 21 residual
+poorly-connected nodes). Its peak stress stays in the millions of psi
+even after excluding every element that touches an unphysically-displaced
+node -- reporting a "cleaned" number anyway would overstate confidence in
+it.
+
+### Visual inspection: does it actually look right?
+
+Numbers can agree by coincidence. The more direct check: render both
+models from matching camera angles and isolate the same structural
+groups, side by side, and look.
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_overview_planform.png" alt="Side-by-side planform view comparing the original and rebuilt NASA CRM wingbox meshes" style="max-width:100%;">
+
+*Planform view, both models. Sweep, taper, and root box cross-section all
+line up. The rebuild's mesh is visibly denser everywhere -- 79,053
+elements against 35,489, since `mesh_size` was chosen independently of
+NASA's own mesh density, not tuned to match it.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_overview_iso.png" alt="Side-by-side isometric view comparing the original and rebuilt NASA CRM wingbox meshes" style="max-width:100%;">
+
+*Isometric view -- the same "iso rotates a long swept wing into a tall
+portrait shape" effect documented earlier in this post shows up
+identically on both models, itself a small confirmation that the
+camera/framing logic generalizes rather than being tuned to one mesh.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_overview_top.png" alt="Side-by-side thickness-profile view comparing the original and rebuilt NASA CRM wingbox meshes, showing span versus thickness" style="max-width:100%;">
+
+*Span-vs-thickness profile. This is the one overview angle with a real,
+visible discrepancy: the original shows a distinctly cambered, curved
+upper surface near the root, while the rebuild reads comparatively
+flatter and more box-like along most of the span. Plausible cause: the
+rebuild's `mesh_size` (150 mm) undersamples the true NURBS curvature of
+the IGES surfaces more than NASA's own finer, hand-tuned mesh does --
+worth a finer local mesh size as a follow-up check, not yet done here.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_ribs.png" alt="Side-by-side isolated-ribs comparison between the original and rebuilt NASA CRM wingbox" style="max-width:100%;">
+
+*Ribs isolated, `camera="auto"` on both. The clearest match in the whole
+inspection -- same fan pattern, same 58 rib stations, same taper, same
+root-to-tip spacing. Just denser.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_spars.png" alt="Side-by-side isolated-spars comparison between the original and rebuilt NASA CRM wingbox, showing a dense shear-web comb structure in the original that is absent from the rebuild" style="max-width:100%;">
+
+*Spars isolated -- the most significant discrepancy found in this
+inspection. The original's "ShearWebs" group (8,880 elements) is a dense
+comb of closely-spaced internal webs running between ribs, in addition to
+the 2 main leading/trailing-edge spars (1,611 elements). The rebuild's
+SPARS component -- verified from two different camera angles, not just
+one occlusion-prone view -- contains only 3 clean, continuous spanwise
+webs (front/mid/rear spar) and no periodic shear-tie structure at all.
+NASA's downloadable IGES geometry for spars appears to only include the
+primary continuous webs, not the rib-spaced shear ties the original FE
+model actually has. This is a genuine structural coverage gap in the
+source CAD, not a rendering artifact -- and a plausible partial explanation
+for the elevated peak stress at spars/ribs above: less internal
+stiffening structure in the rebuild means load concentrates differently
+than in the original.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_skins.png" alt="Side-by-side isolated-skins comparison between the original and rebuilt NASA CRM wingbox" style="max-width:100%;">
+
+*Skins isolated (upper + lower together on both sides, since the rebuild
+doesn't split them the way the original's named groups do). Shape
+matches well; the rebuild's mesh is visibly less regular -- an
+unstructured, quad-recombined-from-triangles pattern versus the
+original's clean structured grid. A meshing-*style* difference, not a
+shape discrepancy.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_stringers.png" alt="Side-by-side comparison of the original's CBAR stiffeners and the rebuild's shell-based stringers" style="max-width:100%;">
+
+*Stiffeners (original, CBAR) vs. stringers (rebuild, shell). The element-
+type difference is already-documented and expected -- the original models
+these as 1D bars, the rebuild as shell strips, since the IGES download
+only provides them as 2D midsurfaces. Beyond that expected difference,
+the rebuild shows some crossing/convergence near the root that the
+original's cleaner fan doesn't -- plausibly genuine design tapering
+(stringers terminating before the root attachment, a real detail in many
+aircraft structures) or a visual symptom of this component's
+already-documented residual connectivity issues. Not disentangled here.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_rib_caps.png" alt="Rebuilt rib caps geometry, shown alone since the original model has no equivalent named group" style="max-width:100%;">
+
+*Rib caps -- rebuild only; the original's named groups have no separate
+entry for this at all (see the case study README for how its thickness
+was assumed rather than measured). Shown here mainly to confirm the
+geometry itself is sane: a closed perimeter loop around each of the 58
+ribs, consistent with what a rib-edge reinforcing flange should actually
+look like.*
+
+### Summary
+
+Three real, distinct kinds of discrepancy came out of this inspection,
+worth telling apart:
+
+1. **Expected, benign:** mesh density and regularity (denser,
+   less-structured rebuild mesh throughout) and the stringers'
+   element-type change (shell vs. CBAR) -- both already understood before
+   this inspection, now visually confirmed rather than just inferred from
+   counts.
+2. **A real geometric gap worth flagging:** the missing shear-web comb
+   structure in the rebuilt spars -- 8,880 elements' worth of internal
+   stiffening present in the original FE model with no counterpart in the
+   downloaded IGES geometry. This is the inspection's most useful finding,
+   and a plausible partial driver of the elevated peak-stress readings
+   throughout the rebuild.
+3. **Unresolved, flagged not chased further:** the flatter apparent
+   camber in the thickness-profile view, and the stringer convergence
+   near the root. Both are visible, both have plausible benign
+   explanations (mesh-size curvature undersampling; genuine design
+   tapering), and neither was run down to a definitive cause here.
+
 ## Honest caveats
 
 This pipeline explicitly does **not**:
