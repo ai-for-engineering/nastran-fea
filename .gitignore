@@ -7,6 +7,9 @@ __pycache__/
 # Solver binary (24MB, download separately -- see README)
 solver/*.exe
 
+# Spike script output (regenerate via spikes/)
+spikes/output/
+
 # Generated model files (regenerate via scripts/)
 models/*.msh
 models/*.npz

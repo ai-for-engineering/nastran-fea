@@ -81,7 +81,39 @@ rationale here, just the reminder:
   larger ones). `scripts/assemble_wingbox_geometry.py` abandoned this
   approach entirely in favor of meshing each component independently and
   welding coincident nodes afterward (a plain coordinate-tolerance
-  operation, no CAD engine involved) -- see its module docstring.
+  operation, no CAD engine involved) -- see its module docstring. Root
+  cause, confirmed via external research (industry docs + wingbox-FEM
+  literature), not just this project's own trial and error: NASA's 5 IGES
+  files are independently-authored "dumb" surface exports with *no shared
+  topology encoded at all* -- each component was modeled and exported
+  separately, so any apparent coincidence at a rib/spar/skin boundary is a
+  geometric accident, not a topological fact, and IGES/CAD export
+  tolerances are looser than analysis tooling expects (a boundary that
+  looks coincident in the authoring CAD tool often isn't, bit-for-bit,
+  once re-imported). "Shared topology" (real industry term, e.g. Ansys/
+  SpaceClaim) is the actual fix and is a CAD-*authoring*-time operation
+  (imprinting one part's boundary curve onto its neighbor before either is
+  meshed), not something recoverable downstream from bare coordinates --
+  confirmed on the weld side too: a real algorithmic bug in
+  `_weld_coincident_nodes`'s conflict check (rejected on mere component
+  presence rather than actual distance) was found and fixed (see its
+  docstring/tests), but even after that fix, ~23% of real near-boundary
+  candidate pairs are still structurally unweldable at the production
+  tolerance (welding them would collapse a genuine element, not a
+  tolerance shortfall) -- the ceiling is the source data, not the
+  algorithm. Confirmed against the original reference deck too: it uses
+  essentially zero RBE2/RBE3/CBUSH connector elements between components
+  (only 20 RBE3, for load/SPC application, not rib/spar/skin ties) --
+  i.e. the real model achieves connectivity via genuinely shared GRIDs,
+  which in turn means it was built from geometry that had shared topology
+  from the start (most likely a single parametric/master model, not
+  independently-exported per-component files like this public IGES
+  release). Practical implication for future case studies: prefer CAD
+  sources with shared topology by construction (a single parametric
+  generator, or a real assembly export with shared faces) over
+  independently-modeled per-component files -- see
+  `spikes/parametric_wingbox_conformal_mesh.py` for a from-scratch
+  synthetic proof of concept.
 - A gmsh mesh-generation failure with the message "1D mesh cannot be
   divided by 2" is NOT necessarily a sign of degenerate/unhealable CAD --
   confirmed it can also be a pure quad-recombination *parity* failure that
