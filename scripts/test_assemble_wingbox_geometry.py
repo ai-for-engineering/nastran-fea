@@ -373,7 +373,7 @@ def test_degenerate_element_is_skipped_not_fatal(monkeypatch, tmp_path: Path):
 
     import numpy as np
 
-    def rigged_weld(xyz_array, component_array, merge_tolerance):
+    def rigged_weld(xyz_array, component_array, merge_tolerance, same_element_partners=None):
         # Collapse every node down to just 2 distinct final GRID ids --
         # any element (4 corners for a CQUAD4) is then guaranteed to
         # reference duplicate ids, regardless of which raw rows actually

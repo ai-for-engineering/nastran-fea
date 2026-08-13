@@ -66,6 +66,7 @@ abandoned CAD-fragment approach.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,7 @@ def _weld_coincident_nodes(
     xyz_array: "np.ndarray",  # noqa: F821
     component_array: "np.ndarray",  # noqa: F821
     merge_tolerance: float,
+    same_element_partners: "dict[int, set[int]] | None" = None,
 ) -> tuple["np.ndarray", "np.ndarray", int]:  # noqa: F821
     """Weld nodes from different components within merge_tolerance of each
     other into shared clusters. Returns (final_grid_id, final_xyz,
@@ -161,18 +163,51 @@ def _weld_coincident_nodes(
     (1-indexed, so final_xyz[final_grid_id[i] - 1] is row i's welded
     position).
 
-    Nearest cross-component pairs are welded first, and a union is only
-    accepted if neither side's existing cluster already contains a node
-    from the other's component -- confirmed necessary against the real
-    NASA CRM wingbox assembly, where naive transitive union-find (weld
-    every pair within radius, regardless of order) collapsed two distinct
-    RIBS corners into one GRID because both independently landed within
-    tolerance of the same nearby SPARS node, producing an invalid
-    self-degenerate CQUAD4 (two of its own corners identical). This still
-    allows a true 3+ component junction (one node per component,
-    genuinely coincident) to collapse to a single shared GRID -- it only
-    ever rejects a union that would put two nodes from the *same*
-    component in one cluster.
+    Nearest cross-component pairs are welded first. A union is accepted
+    unless it would place two nodes of the *same* component into one
+    cluster who are themselves farther than merge_tolerance apart --
+    checked by real pairwise distance between each cluster's existing
+    same-component members, not merely "does this component already
+    appear anywhere in the cluster". That coarser, presence-only version
+    was tried first and reverted: confirmed against the real NASA CRM
+    wingbox assembly to reject the vast majority of genuinely-valid welds
+    at a real rib/spar junction -- e.g. RIBS<->SPARS, 87% of RIBS's own
+    boundary nodes near a SPARS junction (median true gap 13.6mm, well
+    under the 37.5mm tolerance in use) went unwelded, not because they
+    were too far from SPARS, but because the *first* nearby RIBS node to
+    claim a given SPARS node blocked every other, genuinely-adjacent RIBS
+    node along that same physical seam from claiming any SPARS node
+    whose cluster that first RIBS node's component now merely touched --
+    a many-(fine mesh)-to-one-(coarse mesh) density mismatch is normal
+    between two independently-meshed components, not a sign of distinct
+    physical points. The real failure this must still prevent (see
+    test_weld_rejects_transitive_same_component_merge) only involved two
+    same-component nodes that were NOT within tolerance of each other
+    directly (1.8 apart, merge_tolerance=1.0) -- i.e. genuinely distinct
+    points that both merely happened to be near one common third node.
+    Checking real distance between the specific same-component members on
+    each side reproduces that rejection exactly while no longer punishing
+    same-component nodes that are, transitively, all still mutually within
+    tolerance (the normal, common case at a real seam). This still allows
+    a true 3+ component junction (one node per component, genuinely
+    coincident) to collapse to a single shared GRID.
+
+    Distance alone is NOT sufficient, though -- confirmed directly against
+    the real assembly: two corners of the *same* raw element are, by
+    definition, close together (that's what makes them one small
+    element), so a distance-only check happily welded plenty of them
+    together once merge_tolerance approached real element size,
+    self-collapsing that element regardless of how "close" they were
+    (n_degenerate_skipped went from ~150 to 12,900+ at merge_tolerance=75mm
+    under distance-only rejection -- worse than the disconnection this was
+    meant to fix, since a genuinely zero-length edge is a harder solver
+    failure than an unwelded seam). same_element_partners (row -> set of
+    rows sharing a raw element with it, built by the caller from the
+    actual pre-weld connectivity, all combinatorial corner pairs not just
+    consecutive edges) is therefore also checked unconditionally,
+    independent of distance -- if the caller doesn't supply it, this
+    additional guard is skipped (used by unit tests that only exercise the
+    distance logic on bare synthetic points with no real mesh behind them).
 
     Before any of that, an unconditional exact-coincidence pass welds
     nodes at bit-identical coordinates regardless of component --
@@ -216,9 +251,14 @@ def _weld_coincident_nodes(
         uf.union(int(i), int(j))
         n_exact_welded += 1
 
-    cluster_components: list[set[int]] = [set() for _ in range(n)]
+    # cluster_members[root][component_id] = list of row indices of that
+    # component currently in that cluster -- unlike a plain component-id
+    # set, this keeps each member's actual position so a proposed union
+    # can be checked by real distance (see docstring for why presence-only
+    # was insufficient).
+    cluster_members: list[dict[int, list[int]]] = [dict() for _ in range(n)]
     for i, c in enumerate(component_array):
-        cluster_components[uf.find(i)].add(int(c))
+        cluster_members[uf.find(i)].setdefault(int(c), []).append(i)
 
     tree = cKDTree(xyz_array)
     pairs = tree.query_pairs(r=merge_tolerance, output_type="ndarray")
@@ -233,13 +273,43 @@ def _weld_coincident_nodes(
             ri, rj = uf.find(i), uf.find(j)
             if ri == rj:
                 continue
-            if cluster_components[ri] & cluster_components[rj]:
-                # Accepting this union would put two nodes from the same
-                # component in one cluster -- reject it.
+            members_ri = cluster_members[ri]
+            members_rj = cluster_members[rj]
+            conflict = False
+            for c in set(members_ri) & set(members_rj):
+                # Only components present on BOTH sides can introduce a
+                # new same-component pair -- a component present on only
+                # one side was already validated internally by earlier
+                # unions.
+                for row_a in members_ri[c]:
+                    xa = xyz_array[row_a]
+                    partners_a = (
+                        same_element_partners.get(row_a, ())
+                        if same_element_partners
+                        else ()
+                    )
+                    for row_b in members_rj[c]:
+                        if row_b in partners_a:
+                            # Two corners of the SAME raw element -- always
+                            # reject regardless of distance, since merging
+                            # them collapses that element's own edge to
+                            # zero length no matter how "close" they are.
+                            conflict = True
+                            break
+                        if np.linalg.norm(xa - xyz_array[row_b]) > merge_tolerance:
+                            conflict = True
+                            break
+                    if conflict:
+                        break
+                if conflict:
+                    break
+            if conflict:
                 continue
-            merged = cluster_components[ri] | cluster_components[rj]
+            merged: dict[int, list[int]] = {c: list(rows) for c, rows in members_ri.items()}
+            for c, rows in members_rj.items():
+                merged.setdefault(c, []).extend(rows)
             uf.union(ri, rj)
-            cluster_components[uf.find(ri)] = merged
+            cluster_members[uf.find(ri)] = merged
             n_welded_pairs += 1
 
     cluster_of_row = np.array([uf.find(i) for i in range(n)])
@@ -462,12 +532,25 @@ def mesh_assembly_to_bdf(
     xyz_array = np.array(global_xyz)
     component_array = np.array(component_of)
 
+    # row -> set of other rows sharing a raw (pre-weld) element with it --
+    # every combinatorial corner pair, not just consecutive edges, so a
+    # diagonal collision is caught too. Passed to _weld_coincident_nodes so
+    # it can reject a same-component union that would self-collapse one of
+    # these elements, regardless of how close the two corners are (see its
+    # docstring -- distance alone let plenty of these through).
+    same_element_partners: dict[int, set[int]] = {}
+    for comp_idx, _nodes_per_elem, local_nids in raw_elements:
+        rows = [local_to_global[(comp_idx, nid)] for nid in local_nids]
+        for a, b in combinations(rows, 2):
+            same_element_partners.setdefault(a, set()).add(b)
+            same_element_partners.setdefault(b, set()).add(a)
+
     # Weld nodes from different components that landed within
     # merge_tolerance of each other -- see _weld_coincident_nodes's
     # docstring for why naive transitive union-find isn't safe here.
     t_weld_start = time.time()
     final_grid_id, final_xyz_native, n_welded_pairs = _weld_coincident_nodes(
-        xyz_array, component_array, merge_tolerance
+        xyz_array, component_array, merge_tolerance, same_element_partners
     )
     weld_seconds = time.time() - t_weld_start
 
