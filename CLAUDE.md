@@ -190,6 +190,24 @@ rationale here, just the reminder:
   produced its output file shortly after; retrying immediately without
   checking left two duplicate `pyNastran.gui.gui` processes running at
   once. Poll for the expected output file before retrying.
+- `render_model_view`/`render_stress_contour`'s auto-fit/centering
+  (`_build_postscript`'s fit_block in `mcp_server.py`) can be thrown off
+  by GRID points with no owning element -- e.g. an SPC-only reference
+  node representing an attachment point that was never meshed. It used
+  to measure `self.grid.GetPoints()` (every GRID pyNastran loaded) for
+  both the zoom scale and, via pyNastranGUI's own
+  `on_reset_camera()`/`ResetCamera()`, the camera's center -- confirmed on
+  pCRM9's real deck, whose 4 SPC-only carry-through nodes sit tens of
+  meters outside the meshed wing and more than doubled the measured X
+  extent (43,873mm vs the visible mesh's real 20,466mm), shrinking the
+  wing to a small corner of the frame. Fixed by restricting the fit to
+  points actually referenced by a cell in `self.grid`, then re-centering
+  FocalPoint/Position on that same filtered set by a delta shift (which
+  preserves whatever view direction the camera preset/custom camera
+  already established). Any future case study with unconnected GRIDs
+  (SPC- or CONM2-only reference nodes, unused leftover points) is exposed
+  to the same class of bug if this fit logic changes again -- always
+  verify against the actual visible-mesh extent, not the raw GRID list.
 
 Things with no README equivalent (code-level, not usage-level):
 
