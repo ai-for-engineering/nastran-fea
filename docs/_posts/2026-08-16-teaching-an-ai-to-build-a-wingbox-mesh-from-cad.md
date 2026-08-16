@@ -4,59 +4,73 @@ title: "Teaching an AI to Build a Wingbox Mesh from Nothing but CAD Geometry"
 date: 2026-08-16
 author: Mohammed-Amine Bennaiem
 excerpt: >-
-  Part 2: starting from raw IGES CAD instead of a pre-built Nastran deck --
-  meshing, connecting the pieces, and why the real fix turned out to be
-  parametric geometry with shared topology built in from the start.
+  Part 2: two paths to a representative FEM of a real wingbox -- through an
+  intermediate CAD step (the industry's usual path) versus direct
+  parametrization of the geometry -- each tried and compared against a
+  real, previously-validated model.
 ---
 
 **Part 2 of 2** in a series on AI-driven, open-source FEA.
 [Part 1](https://ai-for-engineering.github.io/nastran-fea/2026/08/08/ai-driven-fea-nasa-crm-wingbox.html) covered
 driving an *already-built* Nastran deck conversationally — load, patch,
-solve, extract, visualize — across three real wing models. This post covers
-a harder problem: there is no pre-built deck to start from, only raw CAD
-geometry, so the mesh, its connectivity, and every property/BC/load have to
-be generated before anything can even be solved.
+solve, extract, visualize. This post covers what has to happen before that
+deck exists at all: building an FE model of a real aircraft structure from
+nothing but its geometry.
 
 ## Contents
 
-- [The problem](#the-problem)
-- [The approach](#the-approach)
-- [Case study n°1: welding independently-meshed CAD components](#case-study-n1-welding-independently-meshed-cad-components)
+- [The objective](#the-objective)
+- [Two paths to a representative FEM](#two-paths-to-a-representative-fem)
+- [Case study n°1: the CAD path — welding independently-meshed components](#case-study-n1-the-cad-path--welding-independently-meshed-components)
   - [Results](#results)
   - [Visual inspection: does it actually look right?](#visual-inspection-does-it-actually-look-right)
   - [Summary](#summary)
   - [The real ceiling: why welding alone can't fully connect this CAD](#the-real-ceiling-why-welding-alone-cant-fully-connect-this-cad)
-- [Case study n°2: parametric geometry with shared topology by construction](#case-study-n2-parametric-geometry-with-shared-topology-by-construction)
+- [Case study n°2: the direct-parametrization path — shared topology by construction](#case-study-n2-the-direct-parametrization-path--shared-topology-by-construction)
   - [Real dimensions, not guessed](#real-dimensions-not-guessed)
   - [Connectivity result: 0.0% gap](#connectivity-result-00-gap)
   - [Inspection checks vs. the original model](#inspection-checks-vs-the-original-model)
   - [What's still open](#whats-still-open)
 - [Conclusion](#conclusion)
 
-## The problem
+## The objective
 
-NASA publishes the CRM wingbox two ways: a pre-built Nastran deck (Part 1),
-and five separate raw IGES CAD files (ribs, spars, skins, rib caps,
-stringers) with no FE model at all. Starting from the CAD is a genuinely
-different, harder problem — mesh it, connect the pieces into one structure,
-assign properties, reconstruct boundary conditions and load, and solve —
-without touching the original deck. Does that pipeline get close to a
-real, previously-validated result on an actual aircraft structure?
+Given a real aircraft structure, build a finite element model that's
+actually representative of it: correct topology (ribs, spars, and skins
+genuinely connected where they meet, not just visually coincident),
+correct properties, and a boundary-condition/load set a solver can run to
+a physically meaningful result. Nothing about that objective is specific
+to one modeling technique — NASA's CRM wingbox is the concrete structure
+used throughout, but the question generalizes to any airframe.
 
-## The approach
+## Two paths to a representative FEM
 
-Two attempts, tried in order, each a case study below. The first —
-mesh each CAD component independently and weld coincident nodes across
-components afterward — is the natural thing to try first, and it gets
-close on the numbers. But it runs into a hard, structural ceiling that no
-amount of tuning fixes, because of how the source CAD was authored. The
-second attempt fixes that at the root: generate the ribs, spars, and skins
-as parametric surfaces with shared topology built in from the start,
-instead of independently-modeled files welded together after the fact.
+There are two fundamentally different ways to get from "a real structure"
+to "an FE model of it":
 
-## Case study n°1: welding independently-meshed CAD components
+1. **Through an intermediate CAD step — the path generally used across the
+   industry.** Geometry is authored or received as CAD — surfaces
+   representing each rib, spar, and skin, often modeled and exported
+   independently — then meshed, and the pieces connected into one
+   structure. NASA publishes exactly this kind of input for the CRM
+   wingbox: five separate IGES files, no FE model at all. **Case study
+   n°1** below follows this path.
+2. **Direct parametrization of the geometry — skipping CAD authoring
+   entirely.** Ribs, spars, and skins are generated as parametric
+   surfaces — explicit functions of span, chord, sweep, and the rest —
+   directly inside the meshing tool, so the structure's connectivity is a
+   property the generator guarantees by construction, rather than
+   something recovered from independently-modeled files afterward.
+   **Case study n°2** below follows this path.
 
-The textbook way to combine several CAD files into one topologically exact
+Same objective, one case study per path — and, as the results below show,
+a real difference in how completely each path actually achieves it.
+
+## Case study n°1: the CAD path — welding independently-meshed components
+
+The CAD path, applied to the wingbox: mesh each of NASA's 5 IGES
+components, then connect them into one structure. The textbook way to
+combine several CAD files into one topologically exact
 mesh is an OpenCASCADE boolean fragment (`gmsh.model.occ.fragment`) — tried
 first, and abandoned after hitting real, reproducible tooling limits:
 fragmenting just 2 of the 5 files (ribs + spars, 91 of ~470 total faces)
@@ -215,14 +229,16 @@ That reframes the question. Not "how do we mesh this CAD better" — "what
 does the CAD need to look like for a conformal mesh to be possible at
 all."
 
-## Case study n°2: parametric geometry with shared topology by construction
+## Case study n°2: the direct-parametrization path — shared topology by construction
 
-Real automated wingbox-generation research doesn't mesh independently-
-authored per-component CAD. It generates ribs, spars, and skins from *one
-shared parametric definition* — rib/spar planes cut against a single
+The direct-parametrization path, applied to the same wingbox: skip the
+CAD step entirely and generate ribs, spars, and skins from *one shared
+parametric definition* — rib/spar planes cut against a single
 outer-mold-line surface — so a boundary curve is the same computed curve
 reused on both sides, not two independent approximations of "the same"
-edge that happen to almost line up.
+edge that happen to almost line up. Real automated wingbox-generation
+research works this way rather than meshing independently-authored
+per-component CAD.
 
 Applied here: build every rib, spar, and skin as a parametric surface
 directly inside *one* Gmsh OpenCASCADE session — no export/re-import round
@@ -334,17 +350,18 @@ and [PR #60](https://github.com/ai-for-engineering/nastran-fea/pull/60).
 
 ## Conclusion
 
-Two attempts at the same problem, and a clear ranking between them. Meshing
-each IGES component independently and welding coincident nodes afterward
-gets close -- same order of magnitude on tip displacement and peak stress
-against a real, previously-validated result -- but has a hard structural
-ceiling: 43-99% of near-boundary node pairs per component stay unwelded no
-matter how the algorithm is tuned, because the source CAD never encoded
-shared topology in the first place. Building the same wing's ribs, spars,
-and skins as parametric surfaces in one fragmented Gmsh session instead --
-using real dimensions measured from the original deck, not a generic
-wingbox -- closes that gap completely: 0.0%, at the actual wing's real
-scale and complexity.
+Two paths to the same objective, and a clear ranking between them. The CAD
+path -- meshing each IGES component independently and welding coincident
+nodes afterward, the way the industry generally works -- gets close: same
+order of magnitude on tip displacement and peak stress against a real,
+previously-validated result. But it has a hard structural ceiling: 43-99%
+of near-boundary node pairs per component stay unwelded no matter how the
+algorithm is tuned, because the source CAD never encoded shared topology in
+the first place. The direct-parametrization path -- building the same
+wing's ribs, spars, and skins as parametric surfaces in one fragmented
+Gmsh session, using real dimensions measured from the original deck, not a
+generic wingbox -- closes that gap completely: 0.0%, at the actual wing's
+real scale and complexity.
 
 The general lesson travels beyond this one wing: mesh connectivity is a
 property of how the CAD was *authored*, not something a downstream
