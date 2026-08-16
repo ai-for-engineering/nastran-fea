@@ -498,8 +498,13 @@ algorithm is tuned, because the source CAD never encoded shared topology in
 the first place. The direct-parametrization path -- building the same
 wing's ribs, spars, and skins as parametric surfaces in one fragmented
 Gmsh session, using real dimensions measured from the original deck, not a
-generic wingbox -- closes that gap completely: 0.0%, at the actual wing's
-real scale and complexity.
+generic wingbox -- closes that gap completely at its simplest complexity:
+0.0%, on a 2-spar, unkinked, flat-skinned version of the real planform.
+Pushed further -- 5 spars, a real measured kink, and camber -- the gap
+reappears, but far smaller and fully diagnosed: 12.5%, concentrated almost
+entirely on the newly-added internal spars, with ribs, main spars, and
+skins still at 0.0-1.7%. Even at that higher complexity, still a fraction
+of the CAD path's 43-99%.
 
 The general lesson travels beyond this one wing: mesh connectivity is a
 property of how the CAD was *authored*, not something a downstream
