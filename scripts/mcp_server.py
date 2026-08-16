@@ -2110,7 +2110,41 @@ _fit_right = _fit_right / _np_fit.linalg.norm(_fit_right)
 _fit_up = _np_fit.cross(_fit_right, _fit_view_dir)
 _fit_up = _fit_up / _np_fit.linalg.norm(_fit_up)
 
-_fit_points = _fit_vtk_to_numpy(self.grid.GetPoints().GetData())
+_fit_all_points = _fit_vtk_to_numpy(self.grid.GetPoints().GetData())
+# self.grid.GetPoints() returns every GRID card pyNastran loaded, not just
+# the ones actually drawn -- a GRID that's only referenced by an SPC/SPC1
+# (no owning element) still gets a point in this array with no cell
+# attached to it. Confirmed against a real deck (pCRM9): 4 SPC-only nodes
+# representing a wing-body attachment/carry-through reference sit tens of
+# meters outside the actual meshed wing, more than doubling the raw
+# points' X/Z extent versus the visible mesh alone and shrinking the
+# rendered wing to a fraction of the frame despite this fit logic.
+# Restricting to points actually referenced by a cell (the real, visible
+# geometry) fixes this regardless of *why* a model has unconnected GRIDs.
+_fit_used_ids = set()
+for _fit_cell_i in range(self.grid.GetNumberOfCells()):
+    _fit_ids = self.grid.GetCell(_fit_cell_i).GetPointIds()
+    for _fit_j in range(_fit_ids.GetNumberOfIds()):
+        _fit_used_ids.add(_fit_ids.GetId(_fit_j))
+_fit_points = (
+    _fit_all_points[sorted(_fit_used_ids)] if _fit_used_ids else _fit_all_points
+)
+
+# on_reset_camera()/ResetCamera() (in camera_block, above) centers on the
+# same unfiltered self.grid points -- so on a model with unconnected GRIDs
+# the focal point/position are already off-center before this block even
+# runs, independent of the ParallelScale fix above. Re-center on the real
+# geometry's own midpoint by shifting FocalPoint and Position by the same
+# delta, which preserves the view DIRECTION established by camera_block
+# (preset Azimuth/Elevation, or a custom_camera) and only moves *where*
+# that direction is centered.
+_fit_true_center = (_fit_points.max(axis=0) + _fit_points.min(axis=0)) / 2.0
+_fit_old_focal = _np_fit.array(_fit_cam.GetFocalPoint())
+_fit_old_pos = _np_fit.array(_fit_cam.GetPosition())
+_fit_delta = _fit_true_center - _fit_old_focal
+_fit_cam.SetFocalPoint(*(_fit_old_focal + _fit_delta))
+_fit_cam.SetPosition(*(_fit_old_pos + _fit_delta))
+
 _fit_extent_x = (_fit_points @ _fit_right).ptp()
 _fit_extent_y = (_fit_points @ _fit_up).ptp()
 
