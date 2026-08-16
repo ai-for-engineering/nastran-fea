@@ -27,6 +27,15 @@ deliverable must run on the free stack.
   `./venv/Scripts/python.exe` or `./venv/Scripts/pip.exe` explicitly --
   `python`/`pip` on PATH may resolve to a different (Microsoft Store stub or
   miniforge base) interpreter.
+- Building a standalone executable from this venv with PyInstaller (e.g.
+  a tkinter GUI launcher -- see `tools/`) needs its Tcl/Tk DLLs bundled
+  explicitly -- this venv sits on a miniforge3 base, whose Tcl/Tk DLLs
+  live in `miniforge3/Library/bin` (`tcl86t.dll`, `tk86t.dll`) and script
+  libraries in `miniforge3/Library/lib/{tcl8.6,tk8.6}`, a conda-style
+  layout PyInstaller's own dependency walker doesn't find. Without
+  `--add-binary`/`--add-data` for those plus `TCL_LIBRARY`/`TK_LIBRARY`
+  set at runtime (when `sys.frozen`), the built exe crashes immediately on
+  `import tkinter` with `DLL load failed`.
 - MYSTRAN solver binary lives in `solver/`, gitignored (~24MB). Must be
   downloaded per README before anything can actually solve.
 - `gh` CLI is authenticated on this machine (account `mabvscode`, a member/
@@ -114,6 +123,25 @@ rationale here, just the reminder:
   independently-modeled per-component files -- see
   `spikes/parametric_wingbox_conformal_mesh.py` for a from-scratch
   synthetic proof of concept.
+- Building parametric wing geometry (ribs/spars/skins as explicit
+  surfaces, not CAD import) needs every quantity defining a straight
+  panel edge to be genuinely linear in the span coordinate, not just each
+  factor of it -- confirmed in `spikes/parametric_crm_wingbox.py`:
+  computing a spar's chordwise position as `chordwise_fraction(Y) *
+  chord(Y)` (two functions each linear in Y) is quadratic once
+  multiplied, while the panel itself is built from only its root/tip
+  corners (a straight edge). Every rib except the root landed 0 shared
+  nodes with either spar as a result -- not a mesh-resolution issue
+  (confirmed by lowering `MESH_SIZE` first). Fix: precompute root/tip
+  values once, interpolate linearly everywhere.
+- Identifying how many distinct physical parts (e.g. ribs) a named
+  element group contains by clustering node positions along one axis is
+  unreliable unless the parts are exactly planar/constant along it --
+  the real NASA CRM wingbox's `RIBS` group naively Y-clustered into 314
+  spurious "stations" from continuous node scatter within individual
+  ribs. Connected-component analysis of the group's own element-
+  adjacency graph is the robust fix -- resolved cleanly to 57 real ribs
+  at their real spanwise stations. See `spikes/extract_crm_planform.py`.
 - A gmsh mesh-generation failure with the message "1D mesh cannot be
   divided by 2" is NOT necessarily a sign of degenerate/unhealable CAD --
   confirmed it can also be a pure quad-recombination *parity* failure that
@@ -153,6 +181,15 @@ rationale here, just the reminder:
   `_run_pynastrangui`, which wraps the call in Python's
   `subprocess.run(..., timeout=...)` -- that genuinely kills the child on
   timeout.
+- `render_model_view`/`load_model` MCP calls can time out client-side
+  (~60s) on a large model while the underlying pyNastranGUI subprocess
+  keeps running server-side to completion -- `mcp_server.py`'s own
+  `subprocess.run(..., timeout=...)` bounds the real process correctly
+  (see the Gotcha above); the MCP transport's timeout is a separate,
+  shorter client-side wait. Confirmed directly: a timed-out call still
+  produced its output file shortly after; retrying immediately without
+  checking left two duplicate `pyNastran.gui.gui` processes running at
+  once. Poll for the expected output file before retrying.
 
 Things with no README equivalent (code-level, not usage-level):
 
