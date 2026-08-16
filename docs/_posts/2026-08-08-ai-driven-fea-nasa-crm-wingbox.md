@@ -151,17 +151,16 @@ against NASA's own
 
 Two issues surfaced before the model would solve:
 
-**Case control translated from OptiStruct to SOL 101.** NASA's bulk data is
-standard Nastran, but the case control section was written for Altair
-OptiStruct (`ANALYSIS MODES`/`ANALYSIS STATICS`, no `SOL`/`CEND`).
-`patch_case_control` rebuilds a `SOL 101`/`CEND` block from the existing
-SPC/LOAD/output requests, merging the deck's two subcases into one.
-
-**MYSTRAN capability gap: MAT2 with a coupling term.** The alternative uCRM
-dataset (University of Michigan, CC BY 4.0) uses PSHELL/MAT2 with a nonzero
-MID4 (membrane-bending coupling) to represent smeared stiffened panels.
-MYSTRAN's PSHELL rejects nonzero MID4 — a solver limitation, not a pipeline
-bug. The NASA CRM dataset avoids this.
+- **Case control translated from OptiStruct to SOL 101.** NASA's bulk data
+  is standard Nastran, but the case control section was written for Altair
+  OptiStruct (`ANALYSIS MODES`/`ANALYSIS STATICS`, no `SOL`/`CEND`).
+  `patch_case_control` rebuilds a `SOL 101`/`CEND` block from the existing
+  SPC/LOAD/output requests, merging the deck's two subcases into one.
+- **MYSTRAN capability gap: `MAT2` with a coupling term.** The alternative
+  uCRM dataset (University of Michigan, CC BY 4.0) uses `PSHELL`/`MAT2`
+  with a nonzero `MID4` (membrane-bending coupling) to represent smeared
+  stiffened panels. MYSTRAN's `PSHELL` rejects nonzero `MID4` — a solver
+  limitation, not a pipeline bug. The NASA CRM dataset avoids this.
 
 ### MYSTRAN: scope and limitations
 
@@ -191,23 +190,16 @@ manual, which documents `CBAR`/`PBAR` but neither of those).
 
 MYSTRAN solves the patched "GVW" subcase cleanly.
 
-Every render from here on carries a real 3D axis triad (bottom-right,
-top-right when the legend needs that corner instead), and is framed
-automatically: the model's own projected silhouette is sized to fill the
-frame rather than leaving the large, inconsistent margins a plain camera
-reset (and the hand-tuned zoom multipliers that used to compensate for it)
-left behind. Camera orientation is read off the geometry itself, not
-hardcoded per model: span is whichever axis has the largest bounding-box
-range, thickness the smallest, chord whatever's left; root is whichever
-end of the span axis has the bigger chord x thickness cross-section (a
-real wing tapers). The governing-element camera itself uses the same
-detection -- it picks whichever of {thickness, chord} the governing
-element's own outward normal aligns with more strongly as the dominant
-viewing axis (guaranteeing visibility) and rolls the camera so root always
-lands on the left. That replaces an earlier approach that aimed at one of
-8 fixed isometric octants, weighting span equally with the other two axes
--- which is exactly what let it occasionally rotate this long wing into an
-almost-vertical portrait view.
+Every render from here on is auto-framed and carries a real 3D axis triad:
+
+- **Framing is derived from geometry, not hardcoded per model.** Span,
+  chord, and thickness are read off the bounding box (largest range,
+  smallest range, and whatever's left, respectively); root is whichever
+  end of the span axis has the bigger chord x thickness cross-section.
+- **The governing-element camera uses the same detection** — it aims along
+  whichever of {thickness, chord} the governing element's own outward
+  normal aligns with more strongly, guaranteeing visibility, and rolls so
+  root always lands on the left.
 
 #### Tip displacement
 
@@ -338,14 +330,7 @@ same case study again. Two were tried.
 
 [pCRM9](https://zenodo.org/records/6390714) (TU Delft / University of
 Michigan CRM-derived geometry, CC-BY 4.0) parses and renders cleanly
-through the same camera/zoom pipeline -- and in the process exposed a real
-bug the pipeline's own tests never caught: isolating a single small panel
-from this model revealed that `_write_filtered_bdf` left orphaned `GRID`
-nodes in place, which leaked into the zoom auto-fit's measurement and
-undersized the render. It went unnoticed against the NASA CRM wingbox
-because every isolated group tested there (ribs, skin panels) already
-spans nearly the whole span, so the bug had nothing to bite on. Fixed with
-pyNastran's own `remove_unused` utility.
+through the same camera/zoom pipeline.
 
 #### Model description
 
@@ -395,17 +380,19 @@ ranges 1:1):
   per the case study's source) is present but is inertial, not an applied
   load.
 
-Solving it is a different story. MYSTRAN 19.0.0's own bundled manual
-doesn't document `CBEAM`, `PBEAM`, or `PBEAML` at all -- confirmed
-directly against the manual, not inferred from a parse error alone.
-~31% of this model's elements (1,147 `CBEAM` spar-cap/stiffener elements)
-use exactly those cards. Converting them to MYSTRAN's supported
-`CBAR`/`PBAR` is possible -- pyNastran computes exact area and bending
-inertia for the library cross-section directly, and a standard textbook
-formula gets a reasonable torsion constant -- but it's a big enough change
-to the original model that it's logged as a known gap rather than solved
-silently, the same treatment the uCRM `PSHELL`/`MID4` gap already got
-above.
+Solving it exposes a real MYSTRAN capability gap:
+
+- **`CBEAM`/`PBEAM`/`PBEAML` are not supported at all.** Confirmed
+  directly against MYSTRAN 19.0.0's own bundled manual -- it documents
+  `CBAR`/`PBAR` but neither of those.
+- **~31% of this model's elements are affected** -- 1,147 `CBEAM`
+  spar-cap/stiffener elements use exactly those cards.
+- **A conversion path exists but isn't taken here.** pyNastran can compute
+  exact area/bending inertia for the library cross-section, and a
+  textbook formula gets a reasonable torsion constant, to convert to
+  MYSTRAN's supported `CBAR`/`PBAR`. That's a big enough change to the
+  original model to log as a known gap rather than solve silently -- the
+  same treatment the uCRM `PSHELL`/`MID4` gap got above.
 
 ### The DLR ISTAR wing: composite shells, real normal modes
 
@@ -538,19 +525,6 @@ model to report a locally elevated stress that isn't the real
 root-governing value; treat this peak as a modeling-artifact caveat, not
 a structural conclusion.*
 
-Getting this far needed two real fixes, not just a new render:
-`get_max_stress` raised `AttributeError` against this deck's composite
-(PCOMP) stress table, which indexes by `.element_layer` (one row per ply)
-instead of `.element`/`.element_node` like every other stress result
-tested so far -- fixed generically in `_element_ids_for`, not special-
-cased to this one model. Separately, this deck's rigid elements
-(`RBE2`/`RBE3`), its own coordinate systems, and its per-ply material
-orientations made pyNastranGUI create over a dozen extra actors
-(`Coord 511`, `mcid ply=1..20`, `rigid_lines`, `SPC=3`, ...) that produced
-an unreadable render (oversized overlapping text, a badly mis-framed
-model) -- fixed by hiding everything except the actual mesh, rather than
-hardcoding yet another actor name.
-
 ## The demo: driving it conversationally
 
 Everything above was demonstrated analytically -- numbers, tables,
@@ -650,18 +624,21 @@ Steps 1-6, just pointed at a different deck.
 
 Across three real wing models — NASA's CRM wingbox, TU Delft/Michigan's
 pCRM9, DLR's ISTAR — an AI assistant drove a complete open-source FEA
-postprocessing workflow conversationally: loading and validating a raw
-Nastran deck, patching a broken case control section, running an
-open-source solver, extracting peak stress by component and element type,
-describing exactly what's constraining and loading the model, isolating
-and contouring results by named or property-based groups, and extracting
-normal-mode frequencies with mode-shape visualization. The camera/framing
-logic, the render pipeline, and the MCP tool wrapping all generalized past
-the one model they were first built against — pCRM9 and DLR ISTAR exist
-specifically to test that, not just to pad the results, and [the
+postprocessing workflow conversationally:
+
+- Loading and validating a raw Nastran deck, patching a broken case
+  control section, running an open-source solver.
+- Extracting peak stress by component and element type, and describing
+  exactly what's constraining and loading the model.
+- Isolating and contouring results by named or property-based groups.
+- Extracting normal-mode frequencies with mode-shape visualization.
+
+The camera/framing logic, the render pipeline, and the MCP tool wrapping
+all generalized past the one model they were first built against —
+pCRM9 and DLR ISTAR exist specifically to test that. [The
 demo](#the-demo-driving-it-conversationally) above shows the identical
-conversational pattern driving both the original NASA CRM wingbox and the
-ISTAR wing without modification.
+conversational pattern driving both the NASA CRM wingbox and the ISTAR
+wing without modification.
 
 ### Limitations
 
@@ -683,19 +660,20 @@ This pipeline explicitly does **not**:
 
 For the bounded task actually demonstrated here — driving an
 already-built, already-validated deck through solve, extraction, and
-visualization — yes, with a human engineer reviewing the output. Every
-real number reported in this post was independently cross-checked before
-being trusted: BCs and loads against NASA's own FEM description, the
-ISTAR frequencies against a real MSC Nastran run of the identical deck,
-the applied load's resultant against a hand-summed total. That
-verification step, not the tool call itself, is where the actual
-engineering judgment still lives — and it's a step this pipeline surfaces
-the numbers for, not one it performs on its own. On that basis: reliable
-enough to remove real repetitive overhead (patching decks, babysitting
-solver runs, hunting for the one governing number across thousands of
-elements) for a stress engineer who still reviews and cross-checks the
-output, not reliable enough to replace that engineer or stand in for
-certified sign-off.
+visualization — yes, with a human engineer reviewing the output.
+
+- Every real number reported in this post was independently cross-checked
+  before being trusted: BCs and loads against NASA's own FEM description,
+  ISTAR frequencies against a real MSC Nastran run of the identical deck,
+  the applied load's resultant against a hand-summed total.
+- That verification step, not the tool call itself, is where the actual
+  engineering judgment still lives — this pipeline surfaces the numbers
+  for it, not a substitute for it.
+- Net: reliable enough to remove real repetitive overhead (patching decks,
+  babysitting solver runs, hunting for the one governing number across
+  thousands of elements) for a stress engineer who still reviews and
+  cross-checks the output — not reliable enough to replace that engineer
+  or stand in for certified sign-off.
 
 What this doesn't cover: every model here started from an *already-built*
 Nastran deck. [Part 2](https://ai-for-engineering.github.io/nastran-fea/2026/08/16/teaching-an-ai-to-build-a-wingbox-mesh-from-cad.html)
