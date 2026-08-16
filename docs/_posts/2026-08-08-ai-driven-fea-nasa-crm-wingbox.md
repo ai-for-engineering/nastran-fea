@@ -28,7 +28,7 @@ CAD geometry.
 
 - [The problem](#the-problem)
 - [The approach](#the-approach)
-- [Case study n°1: NASA's Common Research Model wingbox](#case-study-n1-nasas-common-research-model-wingbox)
+- [Test model 1: NASA's Common Research Model wingbox](#test-model-1-nasas-common-research-model-wingbox)
   - [Model description](#model-description)
   - [MYSTRAN: scope and limitations](#mystran-scope-and-limitations)
   - [Results](#results)
@@ -36,10 +36,12 @@ CAD geometry.
     - [Stress contour](#stress-contour)
     - [Peak stress by component](#peak-stress-by-component)
     - [Isolating results by component](#isolating-results-by-component)
-- [Case study n°2: does the camera logic generalize?](#case-study-n2-does-the-camera-logic-generalize)
-  - [pCRM9: a real solver-compatibility gap, found honestly](#pcrm9-a-real-solver-compatibility-gap-found-honestly)
-  - [The DLR ISTAR wing: composite shells, real normal modes](#the-dlr-istar-wing-composite-shells-real-normal-modes)
+- [Test model 2: pCRM9](#test-model-2-pcrm9)
+  - [Model description](#model-description-1)
+- [Test model 3: DLR ISTAR wing](#test-model-3-dlr-istar-wing)
+  - [Model description](#model-description-2)
   - [A static run too](#a-static-run-too)
+- [Test models: summary](#test-models-summary)
 - [The demo: driving it conversationally](#the-demo-driving-it-conversationally)
 - [Conclusion](#conclusion)
   - [What was demonstrated](#what-was-demonstrated)
@@ -72,9 +74,9 @@ wraps the pipeline as tool calls — load model, patch case control, run
 solver, extract peak stress, render — letting a client like Claude drive it
 conversationally instead of running scripts by hand.
 
-## Case study n°1: NASA's Common Research Model wingbox
+## Test model 1: NASA's Common Research Model wingbox
 
-The case study: the wingbox from NASA's
+The wingbox from NASA's
 [Common Research Model](https://commonresearchmodel.larc.nasa.gov/fem-file/wingbox-fem-files/)
 — a full-scale semi-span assembly with 50+ ribs, dual spars, and stringers,
 isotropic aluminum (MAT1/CQUAD4/CBAR). Public domain, and genuinely
@@ -279,9 +281,9 @@ How `isolate_groups` handles a resolved element set:
 
 Every real (non-mass) group, each rendered with a correctly framed stress
 contour. The flat panel groups below (skins, shear webs, spars) use
-`camera="planform"` -- the same NASA-report-style angle as the case-study
-overview, which reads cleanly for a single flat component isolated on its
-own:
+`camera="planform"` -- the same NASA-report-style angle as the overview
+render above, which reads cleanly for a single flat component isolated on
+its own:
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_skin_lwr_stress.png" alt="Von Mises stress contour on the lower skin panel" style="max-width:100%;">
 
@@ -319,20 +321,16 @@ peak stresses (same `get_max_stress` call against each group's trimmed
 OP2) are tabulated in
 [Peak stress by component](#peak-stress-by-component) above.
 
-## Case study n°2: does the camera logic generalize?
+## Test model 2: pCRM9
 
-Every camera/zoom decision above was tuned against one model. Testing it
-against a second, independently-authored wing -- different mesh, different
-author, different unit system -- is a better check than re-running the
-same case study again. Two were tried.
-
-### pCRM9: a real solver-compatibility gap, found honestly
-
+Every camera/zoom decision in Test model 1 was tuned against one model.
 [pCRM9](https://zenodo.org/records/6390714) (TU Delft / University of
-Michigan CRM-derived geometry, CC-BY 4.0) parses and renders cleanly
-through the same camera/zoom pipeline.
+Michigan CRM-derived geometry, CC-BY 4.0) is a second, independently-
+authored wing -- different mesh, author, and unit system -- testing
+whether that logic generalizes rather than re-running the same numbers.
+It parses and renders cleanly through the same pipeline.
 
-#### Model description
+### Model description
 
 **Units:** mm / N / tonne / MPa -- stress in MPa, mass in tonne, density
 in tonne/mm³. Deliberately different from the NASA CRM wingbox's
@@ -377,8 +375,7 @@ ranges 1:1):
 - **No static LOAD card anywhere in the deck** -- the original analysis is
   `SOL 103` (normal modes), so there's nothing to sum a resultant from. A
   `CONM2` lumped mass totaling 68.3 tonne (an MTOW fuel/mass distribution,
-  per the case study's source) is present but is inertial, not an applied
-  load.
+  per pCRM9's own source) is present but is inertial, not an applied load.
 
 Solving it exposes a real MYSTRAN capability gap:
 
@@ -394,15 +391,15 @@ Solving it exposes a real MYSTRAN capability gap:
   original model to log as a known gap rather than solve silently -- the
   same treatment the uCRM `PSHELL`/`MID4` gap got above.
 
-### The DLR ISTAR wing: composite shells, real normal modes
+## Test model 3: DLR ISTAR wing
 
 [The ISTAR demonstrator wing](https://zenodo.org/records/7017137) (DLR,
-CC-BY 4.0) is a genuinely different construction: 1,574 CQUAD4 elements,
-each with its own multi-layer GFRP composite layup (`PCOMP` + `MAT8`) --
-no isotropic material and no bar element anywhere in the deck. It solves
-cleanly, and its own original analysis is `SOL 103` (normal modes), not a
-static stress case -- exercising a genuinely different part of the
-pipeline than either wing above.
+CC-BY 4.0) is a third, genuinely different construction: 1,574 CQUAD4
+elements, each with its own multi-layer GFRP composite layup (`PCOMP` +
+`MAT8`) -- no isotropic material and no bar element anywhere in the deck.
+It solves cleanly, and its own original analysis is `SOL 103` (normal
+modes), not a static stress case -- exercising a genuinely different part
+of the pipeline than either test model above.
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/istar_wing_overview.png" alt="Elevated planform view of the DLR ISTAR composite demonstrator wing" style="max-width:100%;">
 
@@ -410,7 +407,7 @@ pipeline than either wing above.
 preset tuned against the NASA CRM wingbox, applied unchanged to a wing a
 fraction of the size, from a different institution, in different units.*
 
-#### Model description
+### Model description
 
 **Units:** SI -- meters, N, kg, Pa.
 
@@ -422,10 +419,10 @@ fraction of the size, from a different institution, in different units.*
 | Root chord | 0.266 m |
 | Tip chord | 0.070 m |
 
-The case study's own tip-displacement discussion below quotes Y = 0.685 m
-for the wingtip -- that's `RBE3` independent node 10001, a synthetic
-interpolation point slightly beyond the last physically meshed row, not
-the structural span itself; the two numbers describe different things.
+The tip-displacement discussion below quotes Y = 0.685 m for the wingtip
+-- that's `RBE3` independent node 10001, a synthetic interpolation point
+slightly beyond the last physically meshed row, not the structural span
+itself; the two numbers describe different things.
 
 **Material and properties, averaged per group.** Every element carries its
 own `PCOMP` (1,574 unique layups, no two elements share one) drawn from 17
@@ -525,6 +522,16 @@ model to report a locally elevated stress that isn't the real
 root-governing value; treat this peak as a modeling-artifact caveat, not
 a structural conclusion.*
 
+## Test models: summary
+
+| | Test model 1: NASA CRM wingbox | Test model 2: pCRM9 | Test model 3: DLR ISTAR wing |
+|---|---|---|---|
+| **Source** | [NASA CRM wingbox FEM](https://commonresearchmodel.larc.nasa.gov/fem-file/wingbox-fem-files/) | [pCRM9 (Zenodo)](https://zenodo.org/records/6390714) | [ISTAR demonstrator wing (Zenodo)](https://zenodo.org/records/7017137) |
+| **In a few numbers** | 1,151.3 in (29.24 m) semi-span, 35,489 elements, isotropic aluminum (MAT1/CQUAD4/CBAR), US customary units | 26,281.5 mm (26.28 m) span, aluminum, mm/N/tonne/MPa units, ~31% of elements are CBEAM | 0.647 m span, 1,574 CQUAD4 shells with 1,574 unique PCOMP composite layups, no bar elements, SI units |
+| **Tested operations** | Load/validate, patch OptiStruct-authored case control, `SOL 101` static solve, peak stress extraction, describe loads/BCs, isolate + contour by named group | Load/validate, camera/zoom generality check, attempted `SOL 101` static solve | Load/validate, `SOL 103` normal-modes solve, frequency extraction, mode-shape render, derived `SOL 101` static run + contour |
+| **Found limitations** | MYSTRAN rejects `PSHELL`/`MAT2` with nonzero `MID4` (uCRM variant only — this deck avoids it) | MYSTRAN doesn't support `CBEAM`/`PBEAM`/`PBEAML` at all — model doesn't solve as-is | None blocking — solves cleanly, including composite normal modes |
+| **Learnings & specifics** | OptiStruct case control needs rebuilding for MYSTRAN; a `.ses` file gives real named groups to isolate by | Confirmed against MYSTRAN's own manual, not just a parse error; a `CBAR`/`PBAR` conversion path exists (pyNastran can derive equivalent section properties) but wasn't applied | OP2's `mode_cycles` field is mislabeled (radians/s, not Hz) — use `sqrt(eigenvalue)/(2*pi)` directly; frequencies matched a real MSC Nastran run to 6 significant figures; `RBE3` interpolation points can show artificially elevated local stress |
+
 ## The demo: driving it conversationally
 
 Everything above was demonstrated analytically -- numbers, tables,
@@ -532,7 +539,7 @@ renders. This section is the other half: the actual conversation, turn by
 turn, that produces them. Wrapping the pipeline in MCP tools turns the
 workflow into a session anyone can read and reproduce -- nine steps,
 covering every distinct postprocessing capability exercised in this post,
-across two of the three case studies above.
+across two of the three test models above.
 
 ### Step 1: load and validate
 
