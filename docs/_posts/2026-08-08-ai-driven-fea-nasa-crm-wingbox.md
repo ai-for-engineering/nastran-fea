@@ -521,12 +521,14 @@ shape for a cantilever under a tip load.*
 
 <img src="https://ai-for-engineering.github.io/nastran-fea/assets/istar_wing_static_stress.png" alt="Static von Mises stress contour on the DLR ISTAR wing under a 50 N wingtip force" style="max-width:100%;">
 
-*Von Mises stress, peak 85.8 MPa. The hot spot sits near Y ~ 0.47
-(~70% span) -- next to another `RBE3` interpolation patch, not at the
-physical root. Rigid-element attachment points are a known place for a
-model to report a locally elevated stress that isn't the real
-root-governing value; treat this peak as a modeling-artifact caveat, not
-a structural conclusion.*
+*Von Mises stress, peak 85.8 MPa at Y ~ 0.47 (~70% span), next to an
+`RBE3` interpolation patch at Y=0.45 -- not the sharp red patch visible
+at the tip. That patch is a second, nearly-as-high concentration (~84
+MPa) where the load-application `RBE3` (Y=0.685) ties into the mesh; the
+color scale saturates near its top, so two distinct near-max spots read
+as the same red. Both sit next to a rigid-element attachment, not the
+physical root -- treat either as a modeling-artifact caveat, not a
+structural conclusion.*
 
 ## Test models: summary
 
