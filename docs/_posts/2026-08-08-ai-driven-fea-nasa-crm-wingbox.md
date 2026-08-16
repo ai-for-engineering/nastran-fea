@@ -31,7 +31,6 @@ CAD geometry.
 - [Case study n°1: NASA's Common Research Model wingbox](#case-study-n1-nasas-common-research-model-wingbox)
   - [Model description](#model-description)
   - [MYSTRAN: scope and limitations](#mystran-scope-and-limitations)
-  - [What's actually being applied: loads and boundary conditions](#whats-actually-being-applied-loads-and-boundary-conditions)
   - [Results](#results)
     - [Tip displacement](#tip-displacement)
     - [Stress contour](#stress-contour)
@@ -120,14 +119,35 @@ MAT1 1/2 (same properties, separate IDs for shells vs. bars): E = 1.0x10⁷
 psi (69.0 GPa), G = 3.8x10⁶ psi (26.2 GPa), ν = 0.31, ρ = 0.101 lbm/in³
 (2,796 kg/m³).
 
-**Applied load and boundary conditions** (subcase "GVW" -- cross-checked
-against NASA's own FEM description in detail further down):
+**Applied load and boundary conditions** (subcase "GVW"). Before trusting
+a stress result, a stress engineer needs to know what's constraining and
+loading the model, not just node/card counts:
+`describe_loads_and_boundary_conditions` reads a BDF's SPC/SPC1 (following
+SPCADD combinations) and FORCE/MOMENT-type cards (following LOAD
+combinations) and summarizes them per subcase -- 196 constrained nodes,
+12,238 FORCE cards on this one. Coordinates were cross-checked directly
+against NASA's own
+[wingbox FEM description](https://commonresearchmodel.larc.nasa.gov/wp-content/uploads/sites/7/2014/02/CRM_wingboxFEM_description_1.pdf):
 
-- **SPC set 2:** 140 nodes at the root rib (Y ≈ 0) fixed in translations
-  T1/T2/T3; 56 nodes at a second rib ~120 in outboard fixed in T3 only.
-- **LOAD set 3:** 12,238 FORCE cards, 20.41 lbf each, uniform +Z, one per
-  grid point spread across every named component. Resultant: 249,777.6
-  lbf (1,111.0 kN) vertical, zero net moment.
+- **Boundary conditions (SPC set 2): root joint, two rib stations.** 140
+  nodes at the symmetry-plane root rib (Y ≈ 0) are fixed in all three
+  translations (DOF `123`). A further 56 nodes at a second rib ~120 in
+  outboard (Y ≈ 120, full semi-span ≈ 1,151 in) are fixed in Z only (DOF
+  `3`). NASA's description documents exactly this: "simple cantilever at
+  the root with simulated pressure vessel attach lug fittings at
+  body-fairing intersections" — the two rib stations found here are that
+  cantilever root plus the attach-lug support point.
+- **Loads (LOAD set 3): the "GVW" static-strength sizing case.** NASA's
+  description defines GVW as gross vehicle weight (~500,000 lbm design
+  weight for this transport-category model) and this subcase as the
+  baseline static-strength check: a "conservative uniform SLD (spanwise
+  load distribution)" applied at a gross vehicle weight of 500 kips, Mach
+  0.85, FL350. All 12,238 FORCE cards carry the identical magnitude, 20.41
+  lbf (90.8 N), +Z direction, one per grid point, spread uniformly across
+  every named component — skins, ribs, shear webs, spars, stiffeners.
+  Resultant: **249,777.6 lbf (1,111.0 kN)**, vertical, zero net moment —
+  roughly half the 500-kip GVW criterion, consistent with a semi-span model
+  carrying one wing's share of the aircraft's weight.
 
 Two issues surfaced before the model would solve:
 
@@ -166,38 +186,6 @@ run real third-party decks rather than assumed up front: the MAT2/MID4
 rejection above (uCRM), and `CBEAM`/`PBEAM`/`PBEAML` not being supported
 at all (pCRM9, below -- confirmed directly against MYSTRAN's own bundled
 manual, which documents `CBAR`/`PBAR` but neither of those).
-
-### What's actually being applied: loads and boundary conditions
-
-Before trusting a stress result, a stress engineer needs to know what's
-constraining and loading the model. `describe_loads_and_boundary_conditions`
-reads a BDF's SPC/SPC1 (following SPCADD combinations) and FORCE/MOMENT-type
-cards (following LOAD combinations) and summarizes them per subcase.
-
-On the "GVW" subcase: 196 constrained nodes, 12,238 FORCE cards. Node and
-card counts don't say where on the structure they apply, so the coordinates
-were cross-checked directly against NASA's own
-[wingbox FEM description](https://commonresearchmodel.larc.nasa.gov/wp-content/uploads/sites/7/2014/02/CRM_wingboxFEM_description_1.pdf):
-
-- **Boundary conditions (SPC set 2): root joint, two rib stations.** 140
-  nodes at the symmetry-plane root rib (Y ≈ 0) are fixed in all three
-  translations (DOF `123`). A further 56 nodes at a second rib ~120 in
-  outboard (Y ≈ 120, full semi-span ≈ 1,151 in) are fixed in Z only (DOF
-  `3`). NASA's description documents exactly this: "simple cantilever at
-  the root with simulated pressure vessel attach lug fittings at
-  body-fairing intersections" — the two rib stations found here are that
-  cantilever root plus the attach-lug support point.
-- **Loads (LOAD set 3): the "GVW" static-strength sizing case.** NASA's
-  description defines GVW as gross vehicle weight (~500,000 lbm design
-  weight for this transport-category model) and this subcase as the
-  baseline static-strength check: a "conservative uniform SLD (spanwise
-  load distribution)" applied at a gross vehicle weight of 500 kips, Mach
-  0.85, FL350. All 12,238 FORCE cards carry the identical magnitude, 20.41
-  lbf (90.8 N), +Z direction, one per grid point, spread uniformly across
-  every named component — skins, ribs, shear webs, spars, stiffeners.
-  Resultant: **249,777.6 lbf (1,111.0 kN)**, vertical, zero net moment —
-  roughly half the 500-kip GVW criterion, consistent with a semi-span model
-  carrying one wing's share of the aircraft's weight.
 
 ### Results
 
@@ -623,8 +611,7 @@ above.*
 > 2: 140 nodes at the root fixed in T1/T2/T3, 56 nodes ~120 in outboard
 > fixed in T3 only; LOAD set 3: 12,238 FORCE cards, resultant 249,777.6
 > lbf vertical, zero net moment — full detail cross-checked against NASA's
-> own FEM description in [What's actually being applied](#whats-actually-being-applied-loads-and-boundary-conditions)
-> above.
+> own FEM description in [Model description](#model-description) above.
 
 ### Step 7: the same conversation, a different wing
 
