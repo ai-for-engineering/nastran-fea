@@ -32,6 +32,7 @@ ground truth.
   - [Real dimensions, not guessed](#real-dimensions-not-guessed)
   - [Connectivity result: 0.0% gap](#connectivity-result-00-gap)
   - [Inspection checks vs. the original model](#inspection-checks-vs-the-original-model)
+  - [Pushing further: multi-spar, kink, and camber](#pushing-further-multi-spar-kink-and-camber)
   - [What's still open](#whats-still-open)
 - [Conclusion](#conclusion)
 
@@ -298,6 +299,17 @@ connectivity, even with correctly distance-based welding, still runs
 43–99% unwelded per component pair (structural, not a tuning gap). This
 parametric rebuild: 0.0%, on a real wing's real planform.
 
+(These figures — 0.0%, 5,156 boundary nodes, 62 input surfaces — describe
+the deliberately simplest version of the script: 2 spars, no kink, flat
+skins. `spikes/parametric_crm_wingbox.py`'s current default configuration
+is the extended one covered later in this post — [see "Pushing further"
+below](#pushing-further-multi-spar-kink-and-camber) — and reproduces a
+different, larger, and honestly non-zero number. The 2-spar/no-kink/
+flat-skin numbers above remain reproducible by collapsing the script's
+own `N_SPARS`/`PLANFORM_STATIONS`/camber constants back down; they're
+kept here because this section is about proving the base mechanism, which
+they still do.)
+
 ### Inspection checks vs. the original model
 
 Span, chord, taper, sweep, dihedral, and rib stations match the original
@@ -327,7 +339,9 @@ just the count.*
 *Isometric view of the parametric rebuild alone -- sweep, taper, and the
 measured ~6.4° dihedral all visible in one shot.*
 
-**What's simplified here, stated plainly:**
+**What's simplified here, stated plainly** (the base, deliberately-minimal
+version covered so far in this section — see "Pushing further" below for
+what changes after extending it):
 
 - **Only 2 spars.** The original deck's `ShearWebs` group resolves (same
   connected-component analysis) to ~22 *more* continuous internal spanwise
@@ -340,6 +354,125 @@ measured ~6.4° dihedral all visible in one shot.*
 - **Skins carry no airfoil camber** — a flat-panel idealization, matching
   how this project's other wingbox models already idealize skins, not a
   new simplification introduced here.
+- **The planform is a single root-to-tip linear taper/sweep/dihedral** —
+  no kink, even though the rib-spacing pattern above already hints one
+  exists around 120–324in.
+- **No stringers/stiffeners.**
+
+### Pushing further: multi-spar, kink, and camber
+
+The case study above deliberately stopped at the simplest complexity that
+still proved the mechanism. `spikes/parametric_crm_wingbox.py` was then
+extended to close three of the gaps its own list just named — more spars,
+a real spanwise kink, and a curved (cambered) skin — without chasing a
+byte-for-byte reproduction of the real wing's full complexity (that stays
+future work, alongside BC/load/solve, in
+[issue #61](https://github.com/ai-for-engineering/nastran-fea/issues/61)).
+
+**A real kink, not an invented one.** Probing the original solved deck the
+same way as the root/tip numbers above, but at Y=224in — inside the
+120–324in crank region the rib-spacing pattern had already flagged —
+turned up a genuine sweep break: ~15.6° root-to-kink vs. ~36.2°
+kink-to-tip (a less-swept inboard glove, more-swept outboard — a common
+real wing planform feature, not manufactured to make a point).
+`PLANFORM_STATIONS` generalizes the script from a single root-to-tip lerp
+to a piecewise-linear interpolation across however many such stations are
+given — 3, here (root, kink, tip).
+
+**5 spars, not 2.** `SPAR_CHORDWISE_FRACS` is now a genuine list — front,
+3 evenly-spaced internal spars, rear — each interpolated linearly
+root-to-tip exactly like the original front/rear pair did. Still far
+short of the original deck's own ~22 additional internal shear webs
+(measured: 15 distinct clusters at just 10% span, spanning ~35–90% chord,
+tapering to a single web by 90% span — a real, uneven, root-concentrated
+distribution this evenly-spaced version doesn't attempt to match), but a
+real multi-spar parameter now, not a hardcoded pair.
+
+**A modest, engineered camber — and a real lesson in what "shared
+topology by construction" actually requires.** The first attempt at
+camber bulged each skin's interior via `addSurfaceFilling`'s interior
+`pointTags`, leaving the flat boundary wire (and, so the reasoning went,
+every rib/spar connection) untouched. Measured result: a **44.6%**
+connectivity gap, on a config with only the camber axis turned on (2
+spars, no kink) — confirmed to be camber specifically, not a refactor
+regression, by isolating each new axis in turn (kink alone: 0.0%,
+multi-spar alone: 0.0%, camber alone: 44.6%). The real cause: a rib's own
+straight top/bottom edge had always relied on lying entirely inside the
+flat skin's 2D interior — true for a flat surface, false the moment that
+surface curves. Once curved, the embedding held only at the rib's two
+spar-line endpoints, breaking connectivity across that rib's *entire*
+chord width, for all 58 ribs simultaneously — a much bigger break than
+the "internal spars might lose their cap" gap originally anticipated.
+
+The fix restores "shared topology by construction" for camber too,
+instead of leaning on gmsh's fragment to numerically detect coincidence
+after the fact (which is what silently broke above): every rib's own
+top/bottom boundary is now built as a spline through each spar's own
+cambered corner point, and each skin panel — one per rib-to-rib gap now
+(57 of them), not one per kink segment — reuses that *exact* spline
+object as its own boundary, not a fresh, merely-close curve.
+
+**The real, reported result:** N_SPARS=5, kink at Y=224in, camber 2.5%
+top / 1.2% bottom of local chord — 182 input surfaces, 949 after
+fragment, fragment+mesh in ~96s, 34,879 nodes / 38,662 elements, and a
+**12.5% connectivity gap** (961 of 7,672 boundary nodes). That headline
+number hides where it actually is:
+
+| Component | Gap |
+|---|---|
+| All 58 ribs | 0.0% |
+| Front/rear spars | 1.3–1.7% |
+| Top/bottom skins | 1.2% |
+| 3 internal spars | 37.7–63.7% |
+
+Ribs, front/rear spars, and skins — everything actually on the model's
+outer boundary — stay essentially fully connected. The gap concentrates
+almost entirely on the 3 internal spars, exactly where the design
+predicts it: an internal spar's cap is a straight line between two ribs,
+while the skin panel spanning that same gap is a best-fit surface with
+only one forced interior point, not guaranteed to reduce to that exact
+line everywhere else. The front/rear spars' own small residual traces to
+one specific, honestly-diagnosed cause too: the one rib-to-rib gap that
+happens to straddle Y=224 (the kink itself) contains a real polyline bend
+in the spar that the single smooth skin fit spanning that same gap has no
+way to know about. Full diagnosis in the script's own module docstring.
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/parametric_wingbox_extended_planform.png" alt="Planform view of the extended parametric wingbox, showing the kink and multi-spar structure" style="max-width:100%;">
+
+*The extended model's planform. The sweep break at the real Y=224in kink
+station is visible as a subtle change in leading-edge angle about a fifth
+of the way out from the root.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/parametric_wingbox_extended_internal.png" alt="Internal structure of the extended parametric wingbox with skins hidden, showing 5 spars and 58 ribs" style="max-width:100%;">
+
+*Skins hidden to show the internal structure: 5 continuous spanwise spars
+crossing all 58 ribs, sharing real topology at every crossing.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/parametric_wingbox_extended_iso.png" alt="Isometric view of the extended parametric wingbox" style="max-width:100%;">
+
+*Isometric view of the extended model. The camber (2.5% top / 1.2%
+bottom of local chord) is real in the geometry and mesh — confirmed by
+the connectivity numbers above, which only make sense for a genuinely
+curved surface — but subtle enough at this chord-to-thickness aspect
+ratio not to read as an obvious bulge in a plain, unexaggerated
+screenshot, the same way a real wing's camber looks nearly flat from a
+casual distance too.*
+
+**What's still simplified, updated honestly after this extension:**
+
+- **5 spars, evenly spaced in chordwise fraction** — still far short of
+  the real ~22-web count and its real, uneven, root-concentrated
+  distribution (see above).
+- **The planform now has one real kink**, not the smooth continuous curve
+  the real wing's actual outer mold line has — piecewise-*linear* across
+  2 segments, not a spline.
+- **Ribs are still flat planes perpendicular to span.** Unchanged from
+  the base version above.
+- **Camber is now present but engineered, not measured** — a modest
+  analytic parabolic bump, not a real airfoil profile. Demonstrates the
+  geometric capability (curved, non-ruled skins built from reused
+  chordwise cross-section curves), not an aerodynamically accurate outer
+  mold line.
 - **No stringers/stiffeners.**
 
 ### What's still open

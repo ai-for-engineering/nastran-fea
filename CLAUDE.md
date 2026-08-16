@@ -133,7 +133,28 @@ rationale here, just the reminder:
   corners (a straight edge). Every rib except the root landed 0 shared
   nodes with either spar as a result -- not a mesh-resolution issue
   (confirmed by lowering `MESH_SIZE` first). Fix: precompute root/tip
-  values once, interpolate linearly everywhere.
+  values once, interpolate linearly everywhere. A second, distinct trap
+  in the same script, hit when later adding a curved (cambered) skin: a
+  flat/ruled surface's straight-edge connectivity to a crossing rib or
+  spar relies on that whole straight EDGE being embedded in the flat
+  surface's 2D interior, not just touching its boundary -- true for a
+  flat surface, false the instant it curves. Adding `addSurfaceFilling`
+  interior `pointTags` to bulge a skin while leaving its boundary wire
+  alone measured a real 44.6% connectivity gap (isolated to camber alone
+  via a controlled test -- kink alone and extra spars alone both stayed
+  0.0%), because every rib's flat top/bottom edge stopped lying on the
+  now-curved skin anywhere except its two spar-line endpoints. Tightening
+  `addSurfaceFilling`'s own `tol2d`/`tol3d`/`tolAng` barely moved the
+  number (44.6% to 41.8%), ruling out "the filling algorithm doesn't
+  reproduce its own input boundary" as the cause. Real fix: don't rely on
+  `gmsh.model.occ.fragment` to numerically detect coincidence between
+  independently-built, merely-close curved surfaces after the fact --
+  build the rib's own curved boundary as an explicit `addSpline` through
+  each spar's real corner point, and make every neighboring panel reuse
+  that *exact* spline tag (negated for reversed direction in
+  `addCurveLoop`) as its own boundary segment, restoring "shared topology
+  by construction" for curved surfaces the same way straight ones already
+  had it.
 - Identifying how many distinct physical parts (e.g. ribs) a named
   element group contains by clustering node positions along one axis is
   unreliable unless the parts are exactly planar/constant along it --
