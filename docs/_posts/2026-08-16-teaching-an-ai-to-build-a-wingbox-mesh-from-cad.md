@@ -24,8 +24,8 @@ ground truth.
 - [The objective](#the-objective)
 - [Two paths to a representative FEM](#two-paths-to-a-representative-fem)
 - [Case study n°1: the CAD path — welding independently-meshed components](#case-study-n1-the-cad-path--welding-independently-meshed-components)
-  - [Results](#results)
   - [Visual inspection: does it actually look right?](#visual-inspection-does-it-actually-look-right)
+  - [Results](#results)
   - [Summary](#summary)
   - [The real ceiling: why welding alone can't fully connect this CAD](#the-real-ceiling-why-welding-alone-cant-fully-connect-this-cad)
 - [Case study n°2: the direct-parametrization path — shared topology by construction](#case-study-n2-the-direct-parametrization-path--shared-topology-by-construction)
@@ -92,28 +92,6 @@ has), and the result solves cleanly in MYSTRAN. A clean solve on its own
 isn't proof the model is physically sound, though — the real check is
 comparing the numbers and the shape against NASA's own solved reference,
 below.
-
-### Results
-
-| | Rebuilt | Original |
-|---|---|---|
-| Nodes | 70,606 | 13,878 |
-| Elements | 79,053 | 35,489 |
-| Tip displacement | 93.3 in | 159.7 in (-41.6%) |
-| Peak von Mises, Ribs | 79,008 psi | 17,884 psi (+341.8%) |
-| Peak von Mises, Spars | 88,450 psi | 34,046.9 psi (+159.8%) |
-| Peak von Mises, Skins | 80,992 psi | 39,983.7 psi (+102.6%) |
-| Peak von Mises, Stringers | *excluded, see below* | 32,980.1 psi (CBAR) |
-
-Same order of magnitude, with real modeling differences (below) accounting
-for the rest. Stringers are excluded from the numeric comparison, not
-silently cleaned up: it's the least reliable component in this rebuild by
-construction (the one component where quad recombination failed and fell
-back to an all-triangle mesh, a *back-calculated* rather than measured
-thickness, and the sole owner of every one of the rebuild's 21 residual
-poorly-connected nodes). Its peak stress stays in the millions of psi even
-after excluding every element touching an unphysically-displaced node —
-reporting a "cleaned" number anyway would overstate confidence in it.
 
 ### Visual inspection: does it actually look right?
 
@@ -184,6 +162,65 @@ component's residual connectivity issues. Not disentangled here.*
 entry for this component at all. Shown mainly to confirm the geometry is
 sane: a closed perimeter loop around each of the 58 ribs, consistent with
 what a rib-edge reinforcing flange should look like.*
+
+Every image above is a whole-model or isolated-group overview -- useful for
+checking overall shape, but zoomed out far enough that individual elements
+and node-level connectivity are invisible. Since the whole point of this
+case study is a *welding* approach with a real connectivity ceiling (~23%
+of near-boundary pairs stay unwelded, see below), it's worth actually
+zooming in far enough to see that at the mesh level, not just take it on
+faith from the aggregate statistic. Locating a real example first (rather
+than guessing where to point the camera): a script adapting the
+`_weld_coincident_nodes` connectivity check from
+`scripts/assemble_wingbox_geometry.py` found that near the second-support
+rib station (Y ≈ 129 in, close to the real second-support point at
+Y=120.25 in used for this rebuild's boundary conditions), the SPARS/SKINS
+seam has a cluster of 46 unwelded near-boundary node pairs within a 15 in
+radius -- one representative pair (SPARS node 27370, SKINS node 49336) sits
+3.48 in apart, well beyond the 1.48 in `merge_tolerance` used for this
+weld, while a genuinely welded (shared-GRID) node sits only 1.75 in away
+from that same gap.
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_zoom_sparskin_junction_context.png" alt="Zoomed-in local render of the rebuilt wingbox at a SPARS/SKINS junction near the second-support rib station, showing several visible slits where the mesh is genuinely unwelded" style="max-width:100%;">
+
+*Local zoom, rebuilt model only, SPARS+SKINS isolated at the seam near
+Y≈129 in (~40 in wide). The star-shaped points where several element edges
+converge on one vertex are genuinely welded (shared) nodes; the dark
+slivers are real gaps -- background visible straight through the mesh
+because the SPARS-side and SKINS-side nodes on either edge are two
+distinct, unwelded GRIDs, not one connected line.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/rebuild_compare_zoom_sparskin_junction_closeup.png" alt="Tight close-up zoom of the rebuilt wingbox's SPARS/SKINS mesh, showing one clearly unwelded gap directly next to well-connected shared nodes" style="max-width:100%;">
+
+*Same seam, tighter crop (~16 in wide). One clear unwelded gap sits a few
+inches from clean star-junction welds on both sides -- concretely what
+"~23% of near-boundary pairs stay unwelded" looks like at the element
+level: not a uniformly bad seam, but a real mix of successful and failed
+welds along the same short stretch of boundary. Both are CQUAD4 shells on
+both sides of this seam (the apparent triangulation in these renders is
+VTK's own rendering of curved quads, not a genuine CTRIA3 mesh here).*
+
+### Results
+
+| | Rebuilt | Original |
+|---|---|---|
+| Nodes | 70,606 | 13,878 |
+| Elements | 79,053 | 35,489 |
+| Tip displacement | 93.3 in | 159.7 in (-41.6%) |
+| Peak von Mises, Ribs | 79,008 psi | 17,884 psi (+341.8%) |
+| Peak von Mises, Spars | 88,450 psi | 34,046.9 psi (+159.8%) |
+| Peak von Mises, Skins | 80,992 psi | 39,983.7 psi (+102.6%) |
+| Peak von Mises, Stringers | *excluded, see below* | 32,980.1 psi (CBAR) |
+
+Same order of magnitude, with real modeling differences (below) accounting
+for the rest. Stringers are excluded from the numeric comparison, not
+silently cleaned up: it's the least reliable component in this rebuild by
+construction (the one component where quad recombination failed and fell
+back to an all-triangle mesh, a *back-calculated* rather than measured
+thickness, and the sole owner of every one of the rebuild's 21 residual
+poorly-connected nodes). Its peak stress stays in the millions of psi even
+after excluding every element touching an unphysically-displaced node —
+reporting a "cleaned" number anyway would overstate confidence in it.
 
 ### Summary
 
