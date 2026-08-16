@@ -330,6 +330,12 @@ authored wing -- different mesh, author, and unit system -- testing
 whether that logic generalizes rather than re-running the same numbers.
 It parses and renders cleanly through the same pipeline.
 
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/pcrm9_overview_planform.png" alt="Elevated planform view of the pCRM9 wingbox mesh, showing sweep and taper" style="max-width:100%;">
+
+*Rendered directly from pCRM9's own BDF via `render_model_view`,
+camera="planform" -- the same preset and MCP call used for the NASA CRM
+wingbox above, unchanged, against a different author's mesh and units.*
+
 ### Model description
 
 **Units:** mm / N / tonne / MPa -- stress in MPa, mass in tonne, density
