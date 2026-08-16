@@ -20,20 +20,20 @@ mesh connectivity actually has to come from.
 
 ## Contents
 
-- [Rebuilding the wingbox from geometry alone](#rebuilding-from-geometry)
-  - [Results](#rebuild-results)
-  - [Visual inspection: does it actually look right?](#visual-inspection)
-  - [Summary](#rebuild-summary)
-- [The weld algorithm's real bug — and its real ceiling](#weld-bug-and-ceiling)
-- [A parametric rebuild: geometry with shared topology by construction](#parametric-rebuild)
-  - [The parametrization philosophy](#parametrization-philosophy)
-  - [Real dimensions, not guessed](#real-dimensions)
-  - [Building it: the fragment/mesh pipeline](#building-the-pipeline)
-  - [Inspection checks vs. the original model](#parametric-inspection)
-  - [What's still open](#parametric-still-open)
+- [Rebuilding the wingbox from geometry alone](#rebuilding-the-wingbox-from-geometry-alone)
+  - [Results](#results)
+  - [Visual inspection: does it actually look right?](#visual-inspection-does-it-actually-look-right)
+  - [Summary](#summary)
+- [The weld algorithm's real bug — and its real ceiling](#the-weld-algorithms-real-bug--and-its-real-ceiling)
+- [A parametric rebuild: geometry with shared topology by construction](#a-parametric-rebuild-geometry-with-shared-topology-by-construction)
+  - [The parametrization philosophy](#the-parametrization-philosophy)
+  - [Real dimensions, not guessed](#real-dimensions-not-guessed)
+  - [Building it: the fragment/mesh pipeline](#building-it-the-fragmentmesh-pipeline)
+  - [Inspection checks vs. the original model](#inspection-checks-vs-the-original-model)
+  - [What's still open](#whats-still-open)
 - [Conclusion](#conclusion)
 
-## Rebuilding the wingbox from geometry alone {: #rebuilding-from-geometry}
+## Rebuilding the wingbox from geometry alone
 
 Everything in Part 1 starts from NASA's own pre-built finite element deck. A
 harder, more interesting test: starting from nothing but the CAD geometry
@@ -66,7 +66,7 @@ detail, including the other three bugs, is in the
 [repo's issue/PR history](https://github.com/ai-for-engineering/nastran-fea/issues/47)
 and `case_studies/nasa_crm_wingbox/README.md`.
 
-### Results {: #rebuild-results}
+### Results
 
 | | Rebuilt | Original |
 |---|---|---|
@@ -88,7 +88,7 @@ even after excluding every element that touches an unphysically-displaced
 node -- reporting a "cleaned" number anyway would overstate confidence in
 it.
 
-### Visual inspection: does it actually look right? {: #visual-inspection}
+### Visual inspection: does it actually look right?
 
 Numbers can agree by coincidence. The more direct check: render both
 models from matching camera angles and isolate the same structural
@@ -171,7 +171,7 @@ geometry itself is sane: a closed perimeter loop around each of the 58
 ribs, consistent with what a rib-edge reinforcing flange should actually
 look like.*
 
-### Summary {: #rebuild-summary}
+### Summary
 
 Three real, distinct kinds of discrepancy came out of this inspection,
 worth telling apart:
@@ -193,7 +193,7 @@ worth telling apart:
    explanations (mesh-size curvature undersampling; genuine design
    tapering), and neither was run down to a definitive cause here.
 
-## The weld algorithm's real bug — and its real ceiling {: #weld-bug-and-ceiling}
+## The weld algorithm's real bug — and its real ceiling
 
 The spar/rib inspection above ends on a real, visible gap — but there's a
 smaller, less visible one underneath it. Looking closely at the rebuild in
@@ -237,9 +237,9 @@ That reframes the question. Not "how do we mesh this CAD better" — "what
 does the CAD need to look like for a conformal mesh to be possible at
 all."
 
-## A parametric rebuild: geometry with shared topology by construction {: #parametric-rebuild}
+## A parametric rebuild: geometry with shared topology by construction
 
-### The parametrization philosophy {: #parametrization-philosophy}
+### The parametrization philosophy
 
 Real automated wingbox-generation research doesn't mesh independently
 authored per-component CAD. It generates ribs, spars, and skins from *one
@@ -260,7 +260,7 @@ justified spending more time on the real planform rather than stopping at
 "seems to work" — confirms the *stack* isn't the limitation, only the
 input data was.
 
-### Real dimensions, not guessed {: #real-dimensions}
+### Real dimensions, not guessed
 
 The generic toy wingbox proved the mechanism; it isn't the NASA CRM wing.
 `spikes/extract_crm_planform.py` measures the real planform directly from
@@ -288,7 +288,7 @@ the real number: 57 ribs, denser near the root (~24 in spacing) and a
 crank region (~15–17 in), settling to a consistent ~20.9 in spacing
 outboard. Real data, not a smoothed average.
 
-### Building it: the fragment/mesh pipeline {: #building-the-pipeline}
+### Building it: the fragment/mesh pipeline
 
 Ribs are flat planes perpendicular to the span axis; spars are ruled quads
 between their own root and tip corners (provably planar — bounded by two
@@ -326,7 +326,7 @@ surfaces, 18,314 nodes, 19,821 elements), with fragment+mesh finishing in
 1.4 seconds. The abandoned full-face fragment attempt on the real IGES
 files took 234 seconds and still failed on just 2 of 5 components.
 
-### Inspection checks vs. the original model {: #parametric-inspection}
+### Inspection checks vs. the original model
 
 Span, chord, taper, sweep, dihedral, and rib stations match the original
 by construction here — they were measured *from* it, not independently
@@ -377,7 +377,7 @@ gap). This parametric rebuild: 0.0%, on a real wing's real planform.
   introduced here.
 - **No stringers/stiffeners.**
 
-### What's still open {: #parametric-still-open}
+### What's still open
 
 No boundary conditions, load, or solve on this model yet — geometry and
 mesh connectivity only, so far. The natural next step is the same
@@ -389,7 +389,7 @@ the CAD-topology research, and the parametric generator — is in
 [issue #59](https://github.com/ai-for-engineering/nastran-fea/issues/59)
 and [PR #60](https://github.com/ai-for-engineering/nastran-fea/pull/60).
 
-## Conclusion {: #conclusion}
+## Conclusion
 
 Two attempts at the same problem, and a clear ranking between them. Meshing
 each IGES component independently and welding coincident nodes afterward
