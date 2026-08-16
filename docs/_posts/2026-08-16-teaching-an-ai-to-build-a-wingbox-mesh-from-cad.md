@@ -13,9 +13,11 @@ excerpt: >-
 **Part 2 of 2** in a series on AI-driven, open-source FEA.
 [Part 1](https://ai-for-engineering.github.io/nastran-fea/2026/08/08/ai-driven-fea-nasa-crm-wingbox.html) covered
 driving an *already-built* Nastran deck conversationally — load, patch,
-solve, extract, visualize. This post covers what has to happen before that
-deck exists at all: building an FE model of a real aircraft structure from
-nothing but its geometry.
+solve, extract, visualize. This post covers what has to happen to build
+that deck in the first place: deliberately setting the pre-built one
+aside and building an FE model of the same structure from nothing but its
+geometry — then checking the result against NASA's own solved deck as
+ground truth.
 
 ## Contents
 
@@ -53,8 +55,11 @@ to "an FE model of it":
    representing each rib, spar, and skin, often modeled and exported
    independently — then meshed, and the pieces connected into one
    structure. NASA publishes exactly this kind of input for the CRM
-   wingbox: five separate IGES files, no FE model at all. **Case study
-   n°1** below follows this path.
+   wingbox: five separate IGES CAD files, alongside — separately — the
+   pre-built Nastran deck Part 1 already drives. **Case study n°1** below
+   uses only the CAD half of that download, deliberately setting the
+   existing deck aside, and checks the result against that deck as ground
+   truth.
 2. **Direct parametrization of the geometry — skipping CAD authoring
    entirely.** Ribs, spars, and skins are generated as parametric
    surfaces — explicit functions of span, chord, sweep, and the rest —
