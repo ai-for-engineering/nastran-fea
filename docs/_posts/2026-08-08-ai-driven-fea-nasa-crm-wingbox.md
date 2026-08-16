@@ -28,21 +28,21 @@ CAD geometry.
 
 - [The problem](#the-problem)
 - [The approach](#the-approach)
-- [The case study: NASA's Common Research Model wingbox](#the-case-study)
-  - [Model description](#case-study-model-description)
-  - [MYSTRAN: scope and limitations](#mystran-scope)
-- [What's actually being applied: loads and boundary conditions](#loads-and-bcs)
-  - [Results](#loads-results)
-- [The demo: driving it conversationally](#the-demo)
-- [Isolating results by component](#isolating-results)
-- [A second case study: does the camera logic generalize?](#second-case-study)
-  - [pCRM9: a real solver-compatibility gap, found honestly](#pcrm9)
-  - [The DLR ISTAR wing: composite shells, real normal modes](#istar-wing)
-  - [A static run too](#istar-static-run)
+- [The case study: NASA's Common Research Model wingbox](#the-case-study-nasas-common-research-model-wingbox)
+  - [Model description](#model-description)
+  - [MYSTRAN: scope and limitations](#mystran-scope-and-limitations)
+- [What's actually being applied: loads and boundary conditions](#whats-actually-being-applied-loads-and-boundary-conditions)
+  - [Results](#results)
+- [The demo: driving it conversationally](#the-demo-driving-it-conversationally)
+- [Isolating results by component](#isolating-results-by-component)
+- [A second case study: does the camera logic generalize?](#a-second-case-study-does-the-camera-logic-generalize)
+  - [pCRM9: a real solver-compatibility gap, found honestly](#pcrm9-a-real-solver-compatibility-gap-found-honestly)
+  - [The DLR ISTAR wing: composite shells, real normal modes](#the-dlr-istar-wing-composite-shells-real-normal-modes)
+  - [A static run too](#a-static-run-too)
 - [Honest caveats](#honest-caveats)
 - [Conclusion](#conclusion)
 
-## The problem {: #the-problem}
+## The problem
 
 Commercial FEA tools (Nastran, Ansys, Abaqus) are closed and expensive —
 not something to casually wire up to an AI assistant. Exploring what
@@ -50,7 +50,7 @@ AI-driven structural analysis actually looks like, on a real model rather
 than a toy demo, requires a stack transparent enough to script against and
 open enough for anyone to reproduce.
 
-## The approach {: #the-approach}
+## The approach
 
 The stack is entirely open-source and works in **native Nastran bulk-data
 format**, not a translated or simplified syntax:
@@ -68,7 +68,7 @@ wraps the pipeline as tool calls — load model, patch case control, run
 solver, extract peak stress, render — letting a client like Claude drive it
 conversationally instead of running scripts by hand.
 
-## The case study: NASA's Common Research Model wingbox {: #the-case-study}
+## The case study: NASA's Common Research Model wingbox
 
 The case study: the wingbox from NASA's
 [Common Research Model](https://commonresearchmodel.larc.nasa.gov/fem-file/wingbox-fem-files/)
@@ -84,7 +84,7 @@ than a toy example.
 span laid out horizontally, elevated just enough to reveal the root's
 multi-cell box cross-section and leading edge as depth cues.*
 
-### Model description {: #case-study-model-description}
+### Model description
 
 **Units:** US customary -- inches, lbf, psi. `PARAM WTMASS 0.00259` (≈
 1/386.4 in/s²) converts the deck's lbm/in³ weight density into the
@@ -138,7 +138,7 @@ MID4 (membrane-bending coupling) to represent smeared stiffened panels.
 MYSTRAN's PSHELL rejects nonzero MID4 — a solver limitation, not a pipeline
 bug. The NASA CRM dataset avoids this.
 
-### MYSTRAN: scope and limitations {: #mystran-scope}
+### MYSTRAN: scope and limitations
 
 Every solved F06 carries the same attribution:
 
@@ -162,7 +162,7 @@ rejection above (uCRM), and `CBEAM`/`PBEAM`/`PBEAML` not being supported
 at all (pCRM9, below -- confirmed directly against MYSTRAN's own bundled
 manual, which documents `CBAR`/`PBAR` but neither of those).
 
-## What's actually being applied: loads and boundary conditions {: #loads-and-bcs}
+## What's actually being applied: loads and boundary conditions
 
 Before trusting a stress result, a stress engineer needs to know what's
 constraining and loading the model. `describe_loads_and_boundary_conditions`
@@ -194,7 +194,7 @@ were cross-checked directly against NASA's own
   roughly half the 500-kip GVW criterion, consistent with a semi-span model
   carrying one wing's share of the aircraft's weight.
 
-### Results {: #loads-results}
+### Results
 
 MYSTRAN solves the patched "GVW" subcase cleanly.
 
@@ -269,7 +269,7 @@ isn't uniformly governing: its CTRIA3 peak (1,707.5 psi) is below the upper
 skin's (2,794.4 psi). A single whole-model number identifies the worst
 point, not which component drives it.
 
-## The demo: driving it conversationally {: #the-demo}
+## The demo: driving it conversationally
 
 Wrapping the pipeline in MCP tools turns the workflow into a conversation.
 A session breaks into five steps.
@@ -324,7 +324,7 @@ With a stress contour instead of bare geometry:
 psi (123.3 MPa) — a rib-specific peak, distinct from the model-wide one
 above.*
 
-## Isolating results by component {: #isolating-results}
+## Isolating results by component
 
 How `isolate_groups` handles a resolved element set:
 
@@ -384,14 +384,14 @@ peak stresses (same `get_max_stress` call against each group's trimmed
 OP2) are tabulated in
 Peak stress by component above.
 
-## A second case study: does the camera logic generalize? {: #second-case-study}
+## A second case study: does the camera logic generalize?
 
 Every camera/zoom decision above was tuned against one model. Testing it
 against a second, independently-authored wing -- different mesh, different
 author, different unit system -- is a better check than re-running the
 same case study again. Two were tried.
 
-### pCRM9: a real solver-compatibility gap, found honestly {: #pcrm9}
+### pCRM9: a real solver-compatibility gap, found honestly
 
 [pCRM9](https://zenodo.org/records/6390714) (TU Delft / University of
 Michigan CRM-derived geometry, CC-BY 4.0) parses and renders cleanly
@@ -464,7 +464,7 @@ to the original model that it's logged as a known gap rather than solved
 silently, the same treatment the uCRM `PSHELL`/`MID4` gap already got
 above.
 
-### The DLR ISTAR wing: composite shells, real normal modes {: #istar-wing}
+### The DLR ISTAR wing: composite shells, real normal modes
 
 [The ISTAR demonstrator wing](https://zenodo.org/records/7017137) (DLR,
 CC-BY 4.0) is a genuinely different construction: 1,574 CQUAD4 elements,
@@ -563,7 +563,7 @@ consistent with a coupled bending-torsion mode.*
 Hz" -- that's the same `mode_cycles` mislabeling mentioned above, actually
 radians/s. Use `get_normal_modes`'s own value, not the caption.)
 
-### A static run too {: #istar-static-run}
+### A static run too
 
 The ISTAR deck ships only the normal-modes case above -- no `FORCE` or
 `PLOAD*` card anywhere in it. Running a static case meant adding one:
@@ -608,7 +608,7 @@ an unreadable render (oversized overlapping text, a badly mis-framed
 model) -- fixed by hiding everything except the actual mesh, rather than
 hardcoding yet another actor name.
 
-## Honest caveats {: #honest-caveats}
+## Honest caveats
 
 This pipeline explicitly does **not**:
 
@@ -624,7 +624,7 @@ This pipeline explicitly does **not**:
   gaps (PSHELL/MID4 and CBEAM/PBEAM/PBEAML, both above) — check before
   assuming a given model runs on the open-source stack.
 
-## Conclusion {: #conclusion}
+## Conclusion
 
 First end-to-end pass: load, patch, solve, extract, visualize —
 conversational, native Nastran format, open-source throughout, across
