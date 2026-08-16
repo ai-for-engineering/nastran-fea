@@ -242,8 +242,13 @@ significant figures across all 15 extracted modes).
 
 ## Blog
 
-`docs/` is a GitHub Pages site (Jekyll, `minima` theme) with write-ups of
-each case study -- the NASA CRM wingbox post covers the pipeline end to
-end (case-control patch, solver-compatibility gap, results, conversational
-demo, honest caveats) plus a second section on the pCRM9/DLR ISTAR
-generality check above.
+`docs/` is a GitHub Pages site (Jekyll, `minima` theme). A two-part
+write-up, both posts live at these permalinks (stable across content
+edits -- derived from the post's filename/date, not its content):
+
+- [Part 1: driving an already-built deck](https://ai-for-engineering.github.io/nastran-fea/2026/08/08/ai-driven-fea-nasa-crm-wingbox.html) --
+  case-control patch, solver-compatibility gaps, results across three real
+  wing models (NASA CRM, pCRM9, DLR ISTAR), conversational demo.
+- [Part 2: building the mesh from raw CAD](https://ai-for-engineering.github.io/nastran-fea/2026/08/16/teaching-an-ai-to-build-a-wingbox-mesh-from-cad.html) --
+  meshing/welding independently-authored IGES CAD vs. a parametric rebuild
+  with shared topology by construction.
