@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Teaching an AI to Run a Real Wingbox Stress Analysis, in Native Nastran, Open Source Only"
+title: "Teaching an AI to do FEM post processing : a Wingbox Stress Analysis, in Native Nastran, Open Source Only"
 date: 2026-08-08
 author: Mohammed-Amine Bennaiem
 excerpt: >-
@@ -28,19 +28,24 @@ CAD geometry.
 
 - [The problem](#the-problem)
 - [The approach](#the-approach)
-- [The case study: NASA's Common Research Model wingbox](#the-case-study-nasas-common-research-model-wingbox)
+- [Case study n°1: NASA's Common Research Model wingbox](#case-study-n1-nasas-common-research-model-wingbox)
   - [Model description](#model-description)
   - [MYSTRAN: scope and limitations](#mystran-scope-and-limitations)
-- [What's actually being applied: loads and boundary conditions](#whats-actually-being-applied-loads-and-boundary-conditions)
+  - [What's actually being applied: loads and boundary conditions](#whats-actually-being-applied-loads-and-boundary-conditions)
   - [Results](#results)
-- [The demo: driving it conversationally](#the-demo-driving-it-conversationally)
-- [Isolating results by component](#isolating-results-by-component)
-- [A second case study: does the camera logic generalize?](#a-second-case-study-does-the-camera-logic-generalize)
+    - [Tip displacement](#tip-displacement)
+    - [Stress contour](#stress-contour)
+    - [Peak stress by component](#peak-stress-by-component)
+    - [Isolating results by component](#isolating-results-by-component)
+- [Case study n°2: does the camera logic generalize?](#case-study-n2-does-the-camera-logic-generalize)
   - [pCRM9: a real solver-compatibility gap, found honestly](#pcrm9-a-real-solver-compatibility-gap-found-honestly)
   - [The DLR ISTAR wing: composite shells, real normal modes](#the-dlr-istar-wing-composite-shells-real-normal-modes)
   - [A static run too](#a-static-run-too)
-- [Honest caveats](#honest-caveats)
+- [The demo: driving it conversationally](#the-demo-driving-it-conversationally)
 - [Conclusion](#conclusion)
+  - [What was demonstrated](#what-was-demonstrated)
+  - [Limitations](#limitations)
+  - [Can this be relied on industrially?](#can-this-be-relied-on-industrially)
 
 ## The problem
 
@@ -68,7 +73,7 @@ wraps the pipeline as tool calls — load model, patch case control, run
 solver, extract peak stress, render — letting a client like Claude drive it
 conversationally instead of running scripts by hand.
 
-## The case study: NASA's Common Research Model wingbox
+## Case study n°1: NASA's Common Research Model wingbox
 
 The case study: the wingbox from NASA's
 [Common Research Model](https://commonresearchmodel.larc.nasa.gov/fem-file/wingbox-fem-files/)
@@ -162,7 +167,7 @@ rejection above (uCRM), and `CBEAM`/`PBEAM`/`PBEAML` not being supported
 at all (pCRM9, below -- confirmed directly against MYSTRAN's own bundled
 manual, which documents `CBAR`/`PBAR` but neither of those).
 
-## What's actually being applied: loads and boundary conditions
+### What's actually being applied: loads and boundary conditions
 
 Before trusting a stress result, a stress engineer needs to know what's
 constraining and loading the model. `describe_loads_and_boundary_conditions`
@@ -269,62 +274,12 @@ isn't uniformly governing: its CTRIA3 peak (1,707.5 psi) is below the upper
 skin's (2,794.4 psi). A single whole-model number identifies the worst
 point, not which component drives it.
 
-## The demo: driving it conversationally
-
-Wrapping the pipeline in MCP tools turns the workflow into a conversation.
-A session breaks into five steps.
-
-### Step 1: load and validate
-
-> **Me:** Load the CRM wingbox model and check it's valid.
-> **Claude:** *(calls `load_model`)* — parsed cleanly: 35,489 elements,
-> counts by type, no warnings.
-
-### Step 2: patch case control
-
-> **Me:** The case control section is missing SOL/CEND, patch it.
-> **Claude:** *(calls `patch_case_control`)* — rebuilt the header, preserved
-> the existing SPC/LOAD/STRESS requests, wrote the patched deck.
-
-### Step 3: solve
-
-> **Me:** Run it through MYSTRAN.
-> **Claude:** *(calls `run_solver`)* — solved successfully, no fatal errors
-> in the F06.
-
-### Step 4: extract peak stress
-
-> **Me:** What's the peak stress, and where?
-> **Claude:** *(calls `get_max_stress`)* — CQUAD4 governs at 39,983.7 psi
-> (275.7 MPa) on element 2854, subcase 1.
-
-### Step 5: visualize and isolate
-
-> **Me:** Show me a stress contour, and isolate just the ribs so I can see
-> how they're loaded.
-> **Claude:** *(calls `render_model_view` with `isolate_groups=["RIBS"]`,
-> then `render_stress_contour` the same way)* — two renders follow.
+#### Isolating results by component
 
 Named-group isolation: the NASA download ships a `.ses` file (Patran/
 HyperMesh session format) defining named element groups — ribs, spars,
 skins, stringers. `ses_groups.py` parses these; the render tools hide or
-isolate a group by name and auto-frame the camera:
-
-<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_ribs_isolated.png" alt="Ribs isolated from the rest of the wingbox assembly, fanned out for readability" style="max-width:100%;">
-
-*All 6,220 rib elements, isolated from the other ~29,000. `camera="auto"`
-aims at their shared face normal, tilted to fan out otherwise-overlapping
-parallel ribs.*
-
-With a stress contour instead of bare geometry:
-
-<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_ribs_stress.png" alt="Von Mises stress contour on just the isolated ribs" style="max-width:100%;">
-
-*Same isolated ribs, colored by von Mises stress. Governing element: 17,884
-psi (123.3 MPa) — a rib-specific peak, distinct from the model-wide one
-above.*
-
-## Isolating results by component
+isolate a group by name and auto-frame the camera.
 
 How `isolate_groups` handles a resolved element set:
 
@@ -382,9 +337,9 @@ Every render above used the same `render_stress_contour` call, varying
 place of the default `"von_mises"`, also for Stiffeners). Per-component
 peak stresses (same `get_max_stress` call against each group's trimmed
 OP2) are tabulated in
-Peak stress by component above.
+[Peak stress by component](#peak-stress-by-component) above.
 
-## A second case study: does the camera logic generalize?
+## Case study n°2: does the camera logic generalize?
 
 Every camera/zoom decision above was tuned against one model. Testing it
 against a second, independently-authored wing -- different mesh, different
@@ -608,7 +563,120 @@ an unreadable render (oversized overlapping text, a badly mis-framed
 model) -- fixed by hiding everything except the actual mesh, rather than
 hardcoding yet another actor name.
 
-## Honest caveats
+## The demo: driving it conversationally
+
+Everything above was demonstrated analytically -- numbers, tables,
+renders. This section is the other half: the actual conversation, turn by
+turn, that produces them. Wrapping the pipeline in MCP tools turns the
+workflow into a session anyone can read and reproduce -- nine steps,
+covering every distinct postprocessing capability exercised in this post,
+across two of the three case studies above.
+
+### Step 1: load and validate
+
+> **Me:** Load the CRM wingbox model and check it's valid.
+> **Claude:** *(calls `load_model`)* — parsed cleanly: 35,489 elements,
+> counts by type, no warnings.
+
+### Step 2: patch case control
+
+> **Me:** The case control section is missing SOL/CEND, patch it.
+> **Claude:** *(calls `patch_case_control`)* — rebuilt the header, preserved
+> the existing SPC/LOAD/STRESS requests, wrote the patched deck.
+
+### Step 3: solve
+
+> **Me:** Run it through MYSTRAN.
+> **Claude:** *(calls `run_solver`)* — solved successfully, no fatal errors
+> in the F06.
+
+### Step 4: extract peak stress
+
+> **Me:** What's the peak stress, and where?
+> **Claude:** *(calls `get_max_stress`)* — CQUAD4 governs at 39,983.7 psi
+> (275.7 MPa) on element 2854, subcase 1.
+
+### Step 5: visualize and isolate
+
+> **Me:** Show me a stress contour, and isolate just the ribs so I can see
+> how they're loaded.
+> **Claude:** *(calls `render_model_view` with `isolate_groups=["RIBS"]`,
+> then `render_stress_contour` the same way)* — two renders follow.
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_ribs_isolated.png" alt="Ribs isolated from the rest of the wingbox assembly, fanned out for readability" style="max-width:100%;">
+
+*All 6,220 rib elements, isolated from the other ~29,000. `camera="auto"`
+aims at their shared face normal, tilted to fan out otherwise-overlapping
+parallel ribs.*
+
+<img src="https://ai-for-engineering.github.io/nastran-fea/assets/wingbox_ribs_stress.png" alt="Von Mises stress contour on just the isolated ribs" style="max-width:100%;">
+
+*Same isolated ribs, colored by von Mises stress. Governing element: 17,884
+psi (123.3 MPa) — a rib-specific peak, distinct from the model-wide one
+above.*
+
+### Step 6: understand what's applied, not just the result
+
+> **Me:** Before I trust that stress number, what's actually constraining
+> and loading this model?
+> **Claude:** *(calls `describe_loads_and_boundary_conditions`)* — SPC set
+> 2: 140 nodes at the root fixed in T1/T2/T3, 56 nodes ~120 in outboard
+> fixed in T3 only; LOAD set 3: 12,238 FORCE cards, resultant 249,777.6
+> lbf vertical, zero net moment — full detail cross-checked against NASA's
+> own FEM description in [What's actually being applied](#whats-actually-being-applied-loads-and-boundary-conditions)
+> above.
+
+### Step 7: the same conversation, a different wing
+
+> **Me:** Now do the same thing against the DLR ISTAR wing instead.
+> **Claude:** *(calls `load_model` on the ISTAR deck)* — parsed cleanly:
+> 1,574 CQUAD4, each its own PCOMP layup, no named-group file this time,
+> so isolating a panel later needs `isolate_property_ids` instead of
+> `isolate_groups`.
+
+### Step 8: normal modes, not a static stress case
+
+> **Me:** This deck's original analysis is normal modes, not statics —
+> give me the first five frequencies.
+> **Claude:** *(calls `run_solver`, then `get_normal_modes`)* — 9.171,
+> 31.710, 56.227, 69.472, 107.975 Hz, agreeing with the original MSC
+> Nastran run to 6 significant figures.
+
+### Step 9: see the mode, not just the number
+
+> **Me:** Show me what mode 2 actually looks like.
+> **Claude:** *(calls `render_stress_contour` with `result="mode_shape",
+> mode_number=2`)* — the peak deflection band runs diagonally across the
+> wing rather than concentrating at the tip, consistent with a coupled
+> bending-torsion mode.
+
+Nine tool calls, one continuous conversation: load, patch, solve, extract
+stress, isolate and contour by component, describe what's actually
+applied, switch models entirely, extract normal modes, and render a
+specific mode shape. Nothing about the conversational pattern itself was
+NASA-CRM-specific — Steps 7-9 are the identical shape of conversation as
+Steps 1-6, just pointed at a different deck.
+
+## Conclusion
+
+### What was demonstrated
+
+Across three real wing models — NASA's CRM wingbox, TU Delft/Michigan's
+pCRM9, DLR's ISTAR — an AI assistant drove a complete open-source FEA
+postprocessing workflow conversationally: loading and validating a raw
+Nastran deck, patching a broken case control section, running an
+open-source solver, extracting peak stress by component and element type,
+describing exactly what's constraining and loading the model, isolating
+and contouring results by named or property-based groups, and extracting
+normal-mode frequencies with mode-shape visualization. The camera/framing
+logic, the render pipeline, and the MCP tool wrapping all generalized past
+the one model they were first built against — pCRM9 and DLR ISTAR exist
+specifically to test that, not just to pad the results, and [the
+demo](#the-demo-driving-it-conversationally) above shows the identical
+conversational pattern driving both the original NASA CRM wingbox and the
+ISTAR wing without modification.
+
+### Limitations
 
 This pipeline explicitly does **not**:
 
@@ -624,15 +692,23 @@ This pipeline explicitly does **not**:
   gaps (PSHELL/MID4 and CBEAM/PBEAM/PBEAML, both above) — check before
   assuming a given model runs on the open-source stack.
 
-## Conclusion
+### Can this be relied on industrially?
 
-First end-to-end pass: load, patch, solve, extract, visualize —
-conversational, native Nastran format, open-source throughout, across
-three real wing models from three different institutions, in three
-different unit systems. The camera/framing logic, the render pipeline, and
-the MCP tool wrapping all generalized past the one model they were first
-built against — the two follow-on case studies (pCRM9, DLR ISTAR) exist
-specifically to test that, not just to pad the results.
+For the bounded task actually demonstrated here — driving an
+already-built, already-validated deck through solve, extraction, and
+visualization — yes, with a human engineer reviewing the output. Every
+real number reported in this post was independently cross-checked before
+being trusted: BCs and loads against NASA's own FEM description, the
+ISTAR frequencies against a real MSC Nastran run of the identical deck,
+the applied load's resultant against a hand-summed total. That
+verification step, not the tool call itself, is where the actual
+engineering judgment still lives — and it's a step this pipeline surfaces
+the numbers for, not one it performs on its own. On that basis: reliable
+enough to remove real repetitive overhead (patching decks, babysitting
+solver runs, hunting for the one governing number across thousands of
+elements) for a stress engineer who still reviews and cross-checks the
+output, not reliable enough to replace that engineer or stand in for
+certified sign-off.
 
 What this doesn't cover: every model here started from an *already-built*
 Nastran deck. [Part 2](https://ai-for-engineering.github.io/nastran-fea/2026/08/16/teaching-an-ai-to-build-a-wingbox-mesh-from-cad.html)
